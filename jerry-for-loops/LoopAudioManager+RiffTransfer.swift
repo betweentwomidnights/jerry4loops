@@ -24,7 +24,7 @@ extension LoopAudioManager {
         seed: Int = -1,
         bars: Int? = nil
     ) {
-        guard startGeneration() else { return }
+        guard startGeneration(for: loopType) else { return }
         
         print("\(loopType.generationEmoji) Starting \(loopType.displayName.lowercased()) riff transfer:")
         print("   Key: \(key)")
@@ -40,7 +40,7 @@ extension LoopAudioManager {
             DispatchQueue.main.async {
                 self.errorMessage = "Invalid backend URL"
             }
-            cleanupGeneration()
+            cleanupGeneration(for: loopType)
             return
         }
         
@@ -74,7 +74,7 @@ extension LoopAudioManager {
         
         // Make the request
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            self?.cleanupGeneration()
+            self?.cleanupGeneration(for: loopType)
             
             if let error = error {
                 DispatchQueue.main.async {

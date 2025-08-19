@@ -54,9 +54,15 @@ extension Notification.Name {
 }
 
 class LoopAudioManager: ObservableObject {
-    @Published var isGenerating = false
+    @Published var isDrumGenerating: Bool = false
+    @Published var isInstrumentGenerating: Bool = false
     @Published var errorMessage: String?
     @Published var magentaConfig = MagentaConfig()
+    
+    // Computed property for backward compatibility
+    var isGenerating: Bool {
+        return isDrumGenerating || isInstrumentGenerating
+    }
     
     // API Configuration
     internal var backendURL: String = "https://g4l.thecollabagepatch.com/audio"
@@ -208,15 +214,20 @@ class LoopAudioManager: ObservableObject {
     // MARK: - State Management Helpers
         
         /// Starts generation if not already in progress. Returns false if already generating.
-        public func startGeneration() -> Bool {
-            guard !isGenerating else {
+        public func startGeneration(for loopType: LoopType) -> Bool {
+            guard !isDrumGenerating && !isInstrumentGenerating else {
                 print("❌ Loop generation already in progress")
                 return false
             }
             
             DispatchQueue.main.async {
                 self.errorMessage = nil
-                self.isGenerating = true
+                switch loopType {
+                case .drums:
+                    self.isDrumGenerating = true
+                case .instruments:
+                    self.isInstrumentGenerating = true
+                }
             }
             
             if playerManager?.isPlaying == true {
@@ -228,9 +239,14 @@ class LoopAudioManager: ObservableObject {
         }
         
         /// Cleans up generation state
-        public func cleanupGeneration() {
+        public func cleanupGeneration(for loopType: LoopType) {
             DispatchQueue.main.async {
-                self.isGenerating = false
+                switch loopType {
+                case .drums:
+                    self.isDrumGenerating = false
+                case .instruments:
+                    self.isInstrumentGenerating = false
+                }
                 self.playerManager?.setGeneratingNext(false)
             }
         }
@@ -247,7 +263,7 @@ class LoopAudioManager: ObservableObject {
         seed: Int = -1,
         bars: Int? = nil
     ) {
-        guard startGeneration() else { return }
+        guard startGeneration(for: loopType) else { return }
         
         // Build the prompt with BPM
         let finalPrompt = "\(prompt) \(bpm)bpm"
@@ -257,7 +273,7 @@ class LoopAudioManager: ObservableObject {
             DispatchQueue.main.async {
                 self.errorMessage = "Invalid backend URL"
             }
-            cleanupGeneration()
+            cleanupGeneration(for: loopType)
             return
         }
         
@@ -294,7 +310,7 @@ class LoopAudioManager: ObservableObject {
         
         // Make the request
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            self?.cleanupGeneration()
+            self?.cleanupGeneration(for: loopType)
             
             if let error = error {
                 DispatchQueue.main.async {
@@ -509,14 +525,14 @@ extension LoopAudioManager {
         seed: Int = -1,
         bars: Int? = nil
     ) {
-        guard startGeneration() else { return }
+        guard startGeneration(for: loopType) else { return }
         
         // Generate combined audio
         guard let combinedAudioURL = generateCombinedAudioForStyleTransfer() else {
             DispatchQueue.main.async {
                 self.errorMessage = "Failed to create combined audio for style transfer"
             }
-            cleanupGeneration()
+            cleanupGeneration(for: loopType)
             return
         }
         
@@ -530,7 +546,7 @@ extension LoopAudioManager {
             DispatchQueue.main.async {
                 self.errorMessage = "Invalid backend URL"
             }
-            cleanupGeneration()
+            cleanupGeneration(for: loopType)
             return
         }
         
@@ -572,7 +588,7 @@ extension LoopAudioManager {
         
         // Make the request
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            self?.cleanupGeneration()
+            self?.cleanupGeneration(for: loopType)
             
             // Clean up temporary file
             try? FileManager.default.removeItem(at: combinedAudioURL)
@@ -1324,7 +1340,7 @@ extension LoopAudioManager {
             topK: Int,
             guidanceWeight: Double
         ) {
-            guard startGeneration() else { return }
+            guard startGeneration(for: .instruments) else { return }
 
             // Compute a target duration so the input mix matches Magenta's bar length
             // beats_per_bar is fixed to 4 for now
@@ -1346,7 +1362,7 @@ extension LoopAudioManager {
                 )
             else {
                 DispatchQueue.main.async { self.errorMessage = "Need both drum and instrument loops" }
-                cleanupGeneration()
+                cleanupGeneration(for: .instruments)
                 return
             }
 
@@ -1355,7 +1371,7 @@ extension LoopAudioManager {
                 DispatchQueue.main.async {
                     self.errorMessage = "Invalid Magenta URL"
                 }
-                cleanupGeneration()
+                cleanupGeneration(for: .instruments)
                 return
             }
 
@@ -1403,7 +1419,7 @@ extension LoopAudioManager {
 
             URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
                 // Always clear state + remove temp file
-                self?.cleanupGeneration()
+                self?.cleanupGeneration(for: .instruments)
                 try? FileManager.default.removeItem(at: combinedAudioURL)
 
                 if let error = error {

@@ -345,7 +345,7 @@ struct LoopJamView: View {
                 )
                 
                 Button(action: {}) {
-                    Image(systemName: "waveform.path")
+                    Image(systemName: "tornado")
                         .font(.headline)
                         .fontWeight(.bold)
                         .foregroundColor(.black)
@@ -371,7 +371,7 @@ struct LoopJamView: View {
                 
                 // Enhanced Status Text with Live Coding Indicators
                 VStack(alignment: .trailing, spacing: 4) {
-                    if audioManager.isGenerating {
+                    if audioManager.isDrumGenerating {
                         HStack {
                             ProgressView()
                                 .progressViewStyle(CircularProgressViewStyle(tint: .orange))
@@ -410,7 +410,7 @@ struct LoopJamView: View {
                     }
                     
                     // Additional live coding status
-                    if playerManager.isPlaying && !audioManager.isGenerating && !playerManager.drumNextLoopQueued {
+                    if playerManager.isPlaying && !audioManager.isDrumGenerating && !playerManager.drumNextLoopQueued {
                         Text("🎵 Live coding ready")
                             .font(.caption2)
                             .foregroundColor(.blue.opacity(0.8))
@@ -549,7 +549,7 @@ struct LoopJamView: View {
                 
                 // Enhanced Status Text with Live Coding Indicators
                 VStack(alignment: .trailing, spacing: 4) {
-                    if audioManager.isGenerating {
+                    if audioManager.isInstrumentGenerating {
                         HStack {
                             ProgressView()
                                 .progressViewStyle(CircularProgressViewStyle(tint: .orange))
@@ -588,7 +588,7 @@ struct LoopJamView: View {
                     }
                     
                     // Additional live coding status
-                    if playerManager.isPlaying && !audioManager.isGenerating && !playerManager.instrumentNextLoopQueued {
+                    if playerManager.isPlaying && !audioManager.isInstrumentGenerating && !playerManager.instrumentNextLoopQueued {
                         Text("🎹 Live coding ready")
                             .font(.caption2)
                             .foregroundColor(.purple.opacity(0.8))
