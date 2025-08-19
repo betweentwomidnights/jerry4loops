@@ -6,6 +6,12 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		BDB2BCDC2E02758E004C9A6B /* FDWaveformView in Frameworks */ = {isa = PBXBuildFile; productRef = BDB2BCDB2E02758E004C9A6B /* FDWaveformView */; };
+		BDE290262E54CB8F0068A9FE /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = BDE290252E54CB8F0068A9FE /* README.md */; };
+		BDE290282E54CC7B0068A9FE /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = BDE290272E54CC7B0068A9FE /* .gitignore */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		BDB2BCB82E027433004C9A6B /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -24,14 +30,31 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		BDB2BCA22E02742F004C9A6B /* jerry-for-loops.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "jerry-for-loops.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		BDB2BCB72E027433004C9A6B /* jerry-for-loopsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "jerry-for-loopsTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
-		BDB2BCC12E027433004C9A6B /* jerry-for-loopsUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "jerry-for-loopsUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		BDB2BCA22E02742F004C9A6B /* jerry_for_loops.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = jerry_for_loops.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BDB2BCB72E027433004C9A6B /* jerry_for_loopsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = jerry_for_loopsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		BDB2BCC12E027433004C9A6B /* jerry_for_loopsUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = jerry_for_loopsUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		BDE290252E54CB8F0068A9FE /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		BDE290272E54CC7B0068A9FE /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		BDE290172E4C4D0D0068A9FE /* Exceptions for "jerry-for-loops" folder in "Copy Bundle Resources" phase from "jerry_for_loops" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			buildPhase = BDB2BCA02E02742F004C9A6B /* Resources */;
+			membershipExceptions = (
+				"LoopAudioManager+AudioCombining.swift",
+				"LoopAudioManager+RiffTransfer.swift",
+				"LoopAudioManager+SavedLoopsManagement.swift",
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		BDB2BCA42E02742F004C9A6B /* jerry-for-loops */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				BDE290172E4C4D0D0068A9FE /* Exceptions for "jerry-for-loops" folder in "Copy Bundle Resources" phase from "jerry_for_loops" target */,
+			);
 			path = "jerry-for-loops";
 			sourceTree = "<group>";
 		};
@@ -52,6 +75,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BDB2BCDC2E02758E004C9A6B /* FDWaveformView in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -79,15 +103,17 @@
 				BDB2BCBA2E027433004C9A6B /* jerry-for-loopsTests */,
 				BDB2BCC42E027433004C9A6B /* jerry-for-loopsUITests */,
 				BDB2BCA32E02742F004C9A6B /* Products */,
+				BDE290252E54CB8F0068A9FE /* README.md */,
+				BDE290272E54CC7B0068A9FE /* .gitignore */,
 			);
 			sourceTree = "<group>";
 		};
 		BDB2BCA32E02742F004C9A6B /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				BDB2BCA22E02742F004C9A6B /* jerry-for-loops.app */,
-				BDB2BCB72E027433004C9A6B /* jerry-for-loopsTests.xctest */,
-				BDB2BCC12E027433004C9A6B /* jerry-for-loopsUITests.xctest */,
+				BDB2BCA22E02742F004C9A6B /* jerry_for_loops.app */,
+				BDB2BCB72E027433004C9A6B /* jerry_for_loopsTests.xctest */,
+				BDB2BCC12E027433004C9A6B /* jerry_for_loopsUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -95,9 +121,9 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		BDB2BCA12E02742F004C9A6B /* jerry-for-loops */ = {
+		BDB2BCA12E02742F004C9A6B /* jerry_for_loops */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = BDB2BCCB2E027433004C9A6B /* Build configuration list for PBXNativeTarget "jerry-for-loops" */;
+			buildConfigurationList = BDB2BCCB2E027433004C9A6B /* Build configuration list for PBXNativeTarget "jerry_for_loops" */;
 			buildPhases = (
 				BDB2BC9E2E02742F004C9A6B /* Sources */,
 				BDB2BC9F2E02742F004C9A6B /* Frameworks */,
@@ -110,16 +136,17 @@
 			fileSystemSynchronizedGroups = (
 				BDB2BCA42E02742F004C9A6B /* jerry-for-loops */,
 			);
-			name = "jerry-for-loops";
+			name = jerry_for_loops;
 			packageProductDependencies = (
+				BDB2BCDB2E02758E004C9A6B /* FDWaveformView */,
 			);
 			productName = "jerry-for-loops";
-			productReference = BDB2BCA22E02742F004C9A6B /* jerry-for-loops.app */;
+			productReference = BDB2BCA22E02742F004C9A6B /* jerry_for_loops.app */;
 			productType = "com.apple.product-type.application";
 		};
-		BDB2BCB62E027433004C9A6B /* jerry-for-loopsTests */ = {
+		BDB2BCB62E027433004C9A6B /* jerry_for_loopsTests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = BDB2BCCE2E027433004C9A6B /* Build configuration list for PBXNativeTarget "jerry-for-loopsTests" */;
+			buildConfigurationList = BDB2BCCE2E027433004C9A6B /* Build configuration list for PBXNativeTarget "jerry_for_loopsTests" */;
 			buildPhases = (
 				BDB2BCB32E027433004C9A6B /* Sources */,
 				BDB2BCB42E027433004C9A6B /* Frameworks */,
@@ -133,16 +160,16 @@
 			fileSystemSynchronizedGroups = (
 				BDB2BCBA2E027433004C9A6B /* jerry-for-loopsTests */,
 			);
-			name = "jerry-for-loopsTests";
+			name = jerry_for_loopsTests;
 			packageProductDependencies = (
 			);
 			productName = "jerry-for-loopsTests";
-			productReference = BDB2BCB72E027433004C9A6B /* jerry-for-loopsTests.xctest */;
+			productReference = BDB2BCB72E027433004C9A6B /* jerry_for_loopsTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-		BDB2BCC02E027433004C9A6B /* jerry-for-loopsUITests */ = {
+		BDB2BCC02E027433004C9A6B /* jerry_for_loopsUITests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = BDB2BCD12E027433004C9A6B /* Build configuration list for PBXNativeTarget "jerry-for-loopsUITests" */;
+			buildConfigurationList = BDB2BCD12E027433004C9A6B /* Build configuration list for PBXNativeTarget "jerry_for_loopsUITests" */;
 			buildPhases = (
 				BDB2BCBD2E027433004C9A6B /* Sources */,
 				BDB2BCBE2E027433004C9A6B /* Frameworks */,
@@ -156,11 +183,11 @@
 			fileSystemSynchronizedGroups = (
 				BDB2BCC42E027433004C9A6B /* jerry-for-loopsUITests */,
 			);
-			name = "jerry-for-loopsUITests";
+			name = jerry_for_loopsUITests;
 			packageProductDependencies = (
 			);
 			productName = "jerry-for-loopsUITests";
-			productReference = BDB2BCC12E027433004C9A6B /* jerry-for-loopsUITests.xctest */;
+			productReference = BDB2BCC12E027433004C9A6B /* jerry_for_loopsUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
@@ -186,7 +213,7 @@
 					};
 				};
 			};
-			buildConfigurationList = BDB2BC9D2E02742F004C9A6B /* Build configuration list for PBXProject "jerry-for-loops" */;
+			buildConfigurationList = BDB2BC9D2E02742F004C9A6B /* Build configuration list for PBXProject "jerry_for_loops" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -195,14 +222,17 @@
 			);
 			mainGroup = BDB2BC992E02742F004C9A6B;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				BDB2BCDA2E02758E004C9A6B /* XCRemoteSwiftPackageReference "FDWaveformView" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = BDB2BCA32E02742F004C9A6B /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				BDB2BCA12E02742F004C9A6B /* jerry-for-loops */,
-				BDB2BCB62E027433004C9A6B /* jerry-for-loopsTests */,
-				BDB2BCC02E027433004C9A6B /* jerry-for-loopsUITests */,
+				BDB2BCA12E02742F004C9A6B /* jerry_for_loops */,
+				BDB2BCB62E027433004C9A6B /* jerry_for_loopsTests */,
+				BDB2BCC02E027433004C9A6B /* jerry_for_loopsUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -212,6 +242,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BDE290262E54CB8F0068A9FE /* README.md in Resources */,
+				BDE290282E54CC7B0068A9FE /* .gitignore in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -258,12 +290,12 @@
 /* Begin PBXTargetDependency section */
 		BDB2BCB92E027433004C9A6B /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = BDB2BCA12E02742F004C9A6B /* jerry-for-loops */;
+			target = BDB2BCA12E02742F004C9A6B /* jerry_for_loops */;
 			targetProxy = BDB2BCB82E027433004C9A6B /* PBXContainerItemProxy */;
 		};
 		BDB2BCC32E027433004C9A6B /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = BDB2BCA12E02742F004C9A6B /* jerry-for-loops */;
+			target = BDB2BCA12E02742F004C9A6B /* jerry_for_loops */;
 			targetProxy = BDB2BCC22E027433004C9A6B /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -461,7 +493,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/jerry-for-loops.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/jerry-for-loops";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/jerry_for_loops.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/jerry_for_loops";
 			};
 			name = Debug;
 		};
@@ -480,7 +512,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/jerry-for-loops.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/jerry-for-loops";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/jerry_for_loops.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/jerry_for_loops";
 			};
 			name = Release;
 		};
@@ -521,7 +553,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		BDB2BC9D2E02742F004C9A6B /* Build configuration list for PBXProject "jerry-for-loops" */ = {
+		BDB2BC9D2E02742F004C9A6B /* Build configuration list for PBXProject "jerry_for_loops" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				BDB2BCC92E027433004C9A6B /* Debug */,
@@ -530,7 +562,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		BDB2BCCB2E027433004C9A6B /* Build configuration list for PBXNativeTarget "jerry-for-loops" */ = {
+		BDB2BCCB2E027433004C9A6B /* Build configuration list for PBXNativeTarget "jerry_for_loops" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				BDB2BCCC2E027433004C9A6B /* Debug */,
@@ -539,7 +571,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		BDB2BCCE2E027433004C9A6B /* Build configuration list for PBXNativeTarget "jerry-for-loopsTests" */ = {
+		BDB2BCCE2E027433004C9A6B /* Build configuration list for PBXNativeTarget "jerry_for_loopsTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				BDB2BCCF2E027433004C9A6B /* Debug */,
@@ -548,7 +580,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		BDB2BCD12E027433004C9A6B /* Build configuration list for PBXNativeTarget "jerry-for-loopsUITests" */ = {
+		BDB2BCD12E027433004C9A6B /* Build configuration list for PBXNativeTarget "jerry_for_loopsUITests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				BDB2BCD22E027433004C9A6B /* Debug */,
@@ -558,6 +590,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		BDB2BCDA2E02758E004C9A6B /* XCRemoteSwiftPackageReference "FDWaveformView" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/fulldecent/FDWaveformView";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.0.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		BDB2BCDB2E02758E004C9A6B /* FDWaveformView */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BDB2BCDA2E02758E004C9A6B /* XCRemoteSwiftPackageReference "FDWaveformView" */;
+			productName = FDWaveformView;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = BDB2BC9A2E02742F004C9A6B /* Project object */;
 }
