@@ -6,7 +6,8 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
     @Published var isPlaying: Bool = false
     @Published var currentBPM: Int = 120
     @Published var isGeneratingNext: Bool = false
-    @Published var nextLoopQueued: Bool = false
+    @Published var drumNextLoopQueued: Bool = false
+    @Published var instrumentNextLoopQueued: Bool = false
     @Published var filterFrequency: Float = 20000.0 // 20kHz = no filtering
     @Published var reverbAmount: Float = 0.0 // 0-100% reverb
     
@@ -383,7 +384,7 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
                     targetBeat: targetBeat
                 )
                 
-                nextLoopQueued = true
+                drumNextLoopQueued = true
                 print("🥁 Queued drum switch for beat \(targetBeat)")
                 
             } else {
@@ -422,7 +423,7 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
                     targetBeat: targetBeat,
                     preparedBuffer: buf // <— stash it
                 )
-                nextLoopQueued = true
+                instrumentNextLoopQueued = true
                 print("🎹 Queued instrument switch for beat \(targetBeat)")
                 
             } else {
@@ -739,7 +740,8 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
                 ]
             )
 
-            self.nextLoopQueued = false
+            self.drumNextLoopQueued = false
+            self.instrumentNextLoopQueued = false
         }
 
         print("✅ Both-switch scheduled (hard cut, .interrupts) @ hostTime \(boundary)")
@@ -820,7 +822,7 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
                 self.drumAudioURL     = pending.url
                 self.drumLoopMetadata = pending.metadata
                 self.drumLoopBeats    = self.calculateBeatsFromMetadata(pending.metadata, defaultBeats: 16)
-                self.nextLoopQueued   = false
+                self.drumNextLoopQueued = false
 
                 NotificationCenter.default.post(
                     name: .drumLoopSwitched,
@@ -918,7 +920,7 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
                 self.instrumentLoopBeats    = self.calculateBeatsFromMetadata(pending.metadata, defaultBeats: 16)
 
                 // Mark queue consumed at the actual switch.
-                self.nextLoopQueued = false
+                self.instrumentNextLoopQueued = false
 
                 NotificationCenter.default.post(
                     name: .instrumentLoopSwitched,
@@ -1077,7 +1079,8 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
         // Clear pending switches
         pendingDrumSwitch = nil
         pendingInstrumentSwitch = nil
-        nextLoopQueued = false
+        drumNextLoopQueued = false
+        instrumentNextLoopQueued = false
         
         print("⏹️ Stopped all beat-synchronized playback")
     }

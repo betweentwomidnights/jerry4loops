@@ -10,6 +10,7 @@
 		BDB2BCDC2E02758E004C9A6B /* FDWaveformView in Frameworks */ = {isa = PBXBuildFile; productRef = BDB2BCDB2E02758E004C9A6B /* FDWaveformView */; };
 		BDE290262E54CB8F0068A9FE /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = BDE290252E54CB8F0068A9FE /* README.md */; };
 		BDE290282E54CC7B0068A9FE /* .gitignore in Resources */ = {isa = PBXBuildFile; fileRef = BDE290272E54CC7B0068A9FE /* .gitignore */; };
+		BDE2902A2E54D6160068A9FE /* CLAUDE.md in Resources */ = {isa = PBXBuildFile; fileRef = BDE290292E54D6160068A9FE /* CLAUDE.md */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -35,6 +36,7 @@
 		BDB2BCC12E027433004C9A6B /* jerry_for_loopsUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = jerry_for_loopsUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BDE290252E54CB8F0068A9FE /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		BDE290272E54CC7B0068A9FE /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
+		BDE290292E54D6160068A9FE /* CLAUDE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CLAUDE.md; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
@@ -105,6 +107,7 @@
 				BDB2BCA32E02742F004C9A6B /* Products */,
 				BDE290252E54CB8F0068A9FE /* README.md */,
 				BDE290272E54CC7B0068A9FE /* .gitignore */,
+				BDE290292E54D6160068A9FE /* CLAUDE.md */,
 			);
 			sourceTree = "<group>";
 		};
@@ -243,6 +246,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				BDE290262E54CB8F0068A9FE /* README.md in Resources */,
+				BDE2902A2E54D6160068A9FE /* CLAUDE.md in Resources */,
 				BDE290282E54CC7B0068A9FE /* .gitignore in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -271,10 +271,7 @@ struct LoopJamView: View {
                         Button(action: {
                             showDrumConfig = true
                         }) {
-                            HStack(spacing: 8) {
-                                Image(systemName: "waveform")
-                                Text("GENERATE")
-                            }
+                            Image(systemName: "waveform")
                             .font(.subheadline)
                             .fontWeight(.bold)
                             .foregroundColor(.black)
@@ -325,7 +322,7 @@ struct LoopJamView: View {
                     .fill(Color.gray.opacity(0.2))
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
-                            .stroke(playerManager.nextLoopQueued ? Color.orange : Color.red, lineWidth: 2)
+                            .stroke(playerManager.drumNextLoopQueued ? Color.orange : Color.red, lineWidth: 2)
                     )
             )
             
@@ -348,7 +345,7 @@ struct LoopJamView: View {
                 )
                 
                 Button(action: {}) {
-                    Text("STUTTER")
+                    Image(systemName: "waveform.path")
                         .font(.headline)
                         .fontWeight(.bold)
                         .foregroundColor(.black)
@@ -390,7 +387,7 @@ struct LoopJamView: View {
                                     .foregroundColor(.gray)
                             }
                         }
-                    } else if playerManager.nextLoopQueued {
+                    } else if playerManager.drumNextLoopQueued {
                         HStack {
                             Image(systemName: "clock.arrow.circlepath")
                                 .foregroundColor(.orange)
@@ -413,7 +410,7 @@ struct LoopJamView: View {
                     }
                     
                     // Additional live coding status
-                    if playerManager.isPlaying && !audioManager.isGenerating && !playerManager.nextLoopQueued {
+                    if playerManager.isPlaying && !audioManager.isGenerating && !playerManager.drumNextLoopQueued {
                         Text("🎵 Live coding ready")
                             .font(.caption2)
                             .foregroundColor(.blue.opacity(0.8))
@@ -466,10 +463,7 @@ struct LoopJamView: View {
                             break
                         }
                     }) {
-                        HStack(spacing: 8) {
-                            Image(systemName: isJamming ? "slider.horizontal.3" : "pianokeys")
-                            Text(isJamming ? "MAGENTA SETTINGS" : "GENERATE")
-                        }
+                        Image(systemName: isJamming ? "slider.horizontal.3" : "pianokeys")
                         .font(.subheadline).fontWeight(.bold)
                         .foregroundColor(.black)
                         .padding(.horizontal, 16).padding(.vertical, 8)
@@ -516,7 +510,7 @@ struct LoopJamView: View {
                         .fill(Color.gray.opacity(0.2))
                         .overlay(
                             RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.purple, lineWidth: 2)
+                                .stroke(playerManager.instrumentNextLoopQueued ? Color.orange : Color.purple, lineWidth: 2)
                         )
                 )
             
@@ -553,9 +547,37 @@ struct LoopJamView: View {
                 
                 Spacer()
                 
-                // Real Status Text
+                // Enhanced Status Text with Live Coding Indicators
                 VStack(alignment: .trailing, spacing: 4) {
-                    if playerManager.instrumentAudioURL == nil {
+                    if audioManager.isGenerating {
+                        HStack {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .orange))
+                                .scaleEffect(0.8)
+                            
+                            if playerManager.isPlaying {
+                                Text("Live coding: Next loop generating...")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                            } else {
+                                Text("Generating instruments...")
+                                    .font(.caption)
+                                    .foregroundColor(.gray)
+                            }
+                        }
+                    } else if playerManager.instrumentNextLoopQueued {
+                        HStack {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .foregroundColor(.orange)
+                                .font(.caption)
+                            Text("Next loop ready")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
+                        Text("Will switch at loop end")
+                            .font(.caption2)
+                            .foregroundColor(.orange.opacity(0.7))
+                    } else if playerManager.instrumentAudioURL == nil {
                         Text("No instrument loop loaded")
                             .font(.caption)
                             .foregroundColor(.gray)
@@ -565,8 +587,9 @@ struct LoopJamView: View {
                             .foregroundColor(.purple)
                     }
                     
-                    if playerManager.isPlaying && playerManager.instrumentAudioURL != nil {
-                        Text("🎹 Live jamming")
+                    // Additional live coding status
+                    if playerManager.isPlaying && !audioManager.isGenerating && !playerManager.instrumentNextLoopQueued {
+                        Text("🎹 Live coding ready")
                             .font(.caption2)
                             .foregroundColor(.purple.opacity(0.8))
                     }
@@ -603,7 +626,7 @@ struct LoopJamView: View {
                         .font(.caption2)
                         .foregroundColor(.gray)
                     
-                    if playerManager.nextLoopQueued {
+                    if playerManager.drumNextLoopQueued || playerManager.instrumentNextLoopQueued {
                         Text("Next: Ready")
                             .font(.caption2)
                             .foregroundColor(.orange)
