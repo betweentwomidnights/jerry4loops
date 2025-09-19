@@ -19,6 +19,13 @@ struct SavedLoopsList: View {
     @State private var savedLoops: [SavedLoopInfo] = []
     @State private var isLoading = true
     
+    @State private var showingRename = false
+    @State private var renameTarget: SavedLoopInfo?
+    @State private var newName: String = ""
+
+    @State private var showingDeleteConfirm = false
+    @State private var deleteTarget: SavedLoopInfo?
+    
     var body: some View {
         NavigationView {
             VStack(spacing: 0) {
@@ -39,6 +46,31 @@ struct SavedLoopsList: View {
         }
         .onAppear {
             loadSavedLoops()
+        }
+        .sheet(isPresented: $showingRename) {
+            RenameLoopSheet(
+                name: $newName,
+                onCancel: { showingRename = false },
+                onSave: {
+                    guard let loop = renameTarget else { return }
+                    audioManager.renameSavedLoop(loop, to: newName)
+                    showingRename = false
+                    loadSavedLoops()
+                }
+            )
+            .presentationDetents([.fraction(0.28), .medium])
+        }
+
+        .alert("Delete loop?", isPresented: $showingDeleteConfirm) {
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) {
+                guard let loop = deleteTarget else { return }
+                audioManager.deleteSavedLoop(loop)
+                showingDeleteConfirm = false
+                loadSavedLoops()
+            }
+        } message: {
+            Text("This removes the audio and its metadata from your device.")
         }
     }
     
@@ -159,6 +191,36 @@ struct SavedLoopsList: View {
                             isPresented = false
                         }
                     )
+                    .contextMenu {
+                        Button("Use in Slot", action: {
+                            onLoopSelected(loop)
+                            isPresented = false
+                        })
+                        Button("Rename…") {
+                            renameTarget = loop
+                            newName = loop.displayName
+                            showingRename = true
+                        }
+                        Button(role: .destructive) {
+                            deleteTarget = loop
+                            showingDeleteConfirm = true
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button(role: .destructive) {
+                            deleteTarget = loop
+                            showingDeleteConfirm = true
+                        } label: { Label("Delete", systemImage: "trash") }
+
+                        Button {
+                            renameTarget = loop
+                            newName = loop.displayName
+                            showingRename = true
+                        } label: { Label("Rename", systemImage: "pencil") }
+                        .tint(.blue)
+                    }
                 }
             }
             .padding(.horizontal, 16)
@@ -273,6 +335,46 @@ struct SavedLoopRow: View {
             )
         }
         .buttonStyle(PlainButtonStyle())
+    }
+}
+
+struct RenameLoopSheet: View {
+    @Binding var name: String
+    let onCancel: () -> Void
+    let onSave: () -> Void
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 16) {
+                Text("Rename Loop")
+                    .font(.headline)
+
+                TextField("Loop name", text: $name)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
+                    .submitLabel(.done)
+                    .onSubmit { onSave() }
+
+                Spacer()
+
+                HStack(spacing: 12) {
+                    Button("Cancel", action: onCancel)
+                        .frame(maxWidth: .infinity)
+                        .padding(10)
+                        .background(Color.gray.opacity(0.2))
+                        .cornerRadius(8)
+
+                    Button("Save") { onSave() }
+                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .frame(maxWidth: .infinity)
+                        .padding(10)
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                }
+            }
+            .padding()
+            .navigationBarHidden(true)
+        }
     }
 }
 

@@ -99,7 +99,35 @@ class LoopAudioManager: ObservableObject {
     }
     
     @Published var jamState: MagentaJamState = .idle
-    private let magentaBaseURL = URL(string: "https://thecollabagepatch-magenta-retry.hf.space")!
+    static let defaultMagentaBaseURL = "https://thecollabagepatch-magenta-retry.hf.space"
+
+        @Published var magentaBaseURLString: String = {
+            // Load persisted URL or fall back to default
+            UserDefaults.standard.string(forKey: "magenta_base_url")
+            ?? defaultMagentaBaseURL
+        }()
+
+        /// Canonical URL to build endpoints from (no trailing slash)
+        var magentaBaseURL: URL {
+            URL(string: LoopAudioManager.normalizeBaseURL(magentaBaseURLString))!
+        }
+
+        func setMagentaBaseURL(_ newURL: String) {
+            let normalized = LoopAudioManager.normalizeBaseURL(newURL)
+            magentaBaseURLString = normalized
+            UserDefaults.standard.set(normalized, forKey: "magenta_base_url")
+        }
+
+        static func normalizeBaseURL(_ raw: String) -> String {
+            var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Add scheme if missing
+            if !s.lowercased().hasPrefix("http://") && !s.lowercased().hasPrefix("https://") {
+                s = "https://" + s
+            }
+            // Drop trailing slash
+            while s.hasSuffix("/") { s.removeLast() }
+            return s
+        }
     
     private var jamSessionID: String?
     private var jamPollTimer: Timer?
@@ -132,21 +160,33 @@ class LoopAudioManager: ObservableObject {
         }
     
     @objc private func handleJamChunkStartedPlaying(_ notification: Notification) {
-            guard let userInfo = notification.userInfo,
-                  let chunkIndex = userInfo["chunkIndex"] as? Int,
-                  let switchTime = userInfo["switchTime"] as? TimeInterval,
-                  case .running(let sessionID) = jamState else {
-                return
-            }
-            
-            let timingDrift = userInfo["timingDrift"] as? TimeInterval ?? 0.0
-            
-            print("✅ Jam chunk \(chunkIndex) actually started playing at \(String(format: "%.3f", switchTime))s")
-            print("   Timing drift: \(String(format: "%.3f", timingDrift))s")
-            print("   Marking consumed now...")
-            
-            markChunkConsumed(sessionID: sessionID, chunkIndex: chunkIndex)
+        print("🎯 handleJamChunkStartedPlaying fired")
+        print("   Notification userInfo: \(notification.userInfo ?? [:])")
+        
+        guard let userInfo = notification.userInfo,
+              let chunkIndex = userInfo["chunkIndex"] as? Int,
+              let switchTime = userInfo["switchTime"] as? TimeInterval,
+              case .running(let sessionID) = jamState else {
+            print("❌ Jam chunk notification missing data or session not running")
+            print("   jamState: \(jamState)")
+            return
         }
+        
+        let isMagentaChunk = userInfo["isMagentaChunk"] as? Bool ?? false
+        
+        print("✅ Processing jam chunk \(chunkIndex) that started playing")
+        print("   SessionID: \(sessionID)")
+        print("   Is Magenta chunk: \(isMagentaChunk)")
+        
+        // Always try both operations for Magenta chunks
+        if isMagentaChunk {
+            print("🔄 About to mark consumed and fetch next for chunk \(chunkIndex)")
+            markChunkConsumed(sessionID: sessionID, chunkIndex: chunkIndex)
+            fetchNextSequentialChunk(sessionID: sessionID)
+        } else {
+            print("⚠️ Skipping non-Magenta chunk")
+        }
+    }
     
     
     func updateBackendURL(_ newURL: String) {
@@ -429,14 +469,28 @@ class LoopAudioManager: ObservableObject {
         let fileURL = documentsDirectory.appendingPathComponent(fileName)
         
         do {
-            // Clean up old loops to save space
+            // Clean up old loops to save space (but NEVER delete the one that's currently playing)
             let fileManager = FileManager.default
             let directoryContents = try fileManager.contentsOfDirectory(at: documentsDirectory, includingPropertiesForKeys: nil)
-            
-            for file in directoryContents {
-                if file.lastPathComponent.hasPrefix(loopType.filePrefix) {
-                    try? fileManager.removeItem(at: file)
+
+            // Figure out which file is currently audible for this loop type
+            let protectedFilename: String? = {
+                switch loopType {
+                case .drums:
+                    return playerManager?.drumAudioURL?.lastPathComponent
+                case .instruments:
+                    return playerManager?.instrumentAudioURL?.lastPathComponent
                 }
+            }()
+
+            for file in directoryContents {
+                guard file.lastPathComponent.hasPrefix(loopType.filePrefix) else { continue }
+                // Skip the one we’re actively playing
+                if let protected = protectedFilename, file.lastPathComponent == protected {
+                    print("🛡️ Skipping currently-playing \(loopType.displayName.lowercased()): \(protected)")
+                    continue
+                }
+                try? fileManager.removeItem(at: file)
             }
             
             // Save new loop
@@ -457,19 +511,37 @@ class LoopAudioManager: ObservableObject {
             
             // Post notification with rich metadata
             DispatchQueue.main.async {
+                // Extract important tracking info from nested metadata
+                let jamChunkIndex = metadata["jam_chunk_index"] as? Int
+                let jamSessionID = metadata["jam_session_id"] as? String
+                let sourceType = metadata["sourceType"] as? String
+                
+                var userInfo: [String: Any] = [
+                    "audioURL": fileURL,
+                    "bpm": actualBPM,
+                    "bars": bars,
+                    "loopDuration": loopDuration,
+                    "secondsPerBar": secondsPerBar,
+                    "actualDuration": actualDuration,
+                    "seed": seed,
+                    "metadata": metadata // Include full metadata for future use
+                ]
+                
+                // Add tracking info at top level for easy access
+                if let chunkIndex = jamChunkIndex {
+                    userInfo["jam_chunk_index"] = chunkIndex
+                }
+                if let sessionID = jamSessionID {
+                    userInfo["jam_session_id"] = sessionID
+                }
+                if let type = sourceType {
+                    userInfo["sourceType"] = type
+                }
+                
                 NotificationCenter.default.post(
                     name: loopType.notificationName,
                     object: nil,
-                    userInfo: [
-                        "audioURL": fileURL,
-                        "bpm": actualBPM,
-                        "bars": bars,
-                        "loopDuration": loopDuration,
-                        "secondsPerBar": secondsPerBar,
-                        "actualDuration": actualDuration,
-                        "seed": seed,
-                        "metadata": metadata // Include full metadata for future use
-                    ]
+                    userInfo: userInfo
                 )
             }
             
@@ -751,6 +823,8 @@ extension LoopAudioManager {
         let target_sample_rate: Int
     }
     
+    
+    
     // MARK: - Reseed (Splice) — minimal hardcoded version
     func requestReseedSplice(anchorBars: Double = 4.0) {
         // must be running to reseed
@@ -904,12 +978,7 @@ extension LoopAudioManager {
         print("   Combined audio: \(combinedAudioURL.lastPathComponent) (\(String(format: "%.2fs", targetDuration)))")
         
         // Build request to /jam/start (unchanged)
-        guard let url = URL(string: "https://thecollabagepatch-magenta-retry.hf.space/jam/start") else {
-            DispatchQueue.main.async {
-                self.jamState = .error("Invalid Magenta URL")
-            }
-            return
-        }
+        let url = magentaBaseURL.appendingPathComponent("jam/start")
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -942,6 +1011,20 @@ extension LoopAudioManager {
         formData.addField(name: "temperature", value: String(format: "%.4f", temperature))
         formData.addField(name: "topk", value: "\(topK)")
         
+        // ───────────────────────────── NEW: finetune steering ─────────────────────────────
+        let cfg = magentaConfig
+        if cfg.assetsAvailable {
+            if cfg.meanAvailable {
+                formData.addField(name: "mean", value: String(format: "%.4f", cfg.mean))
+            }
+            if let k = cfg.centroidCount, k > 0 {
+                
+                formData.addField(name: "centroid_weights", value: cfg.centroidWeightsCSV)
+            }
+        }
+        // ─────────────────────────────────────────────────────────────────────────────────
+
+        
         // Set request headers and body
         request.setValue(formData.contentTypeHeader, forHTTPHeaderField: "Content-Type")
         request.httpBody = formData.encode()
@@ -951,7 +1034,10 @@ extension LoopAudioManager {
             // Clean up temporary file
             try? FileManager.default.removeItem(at: combinedAudioURL)
             
+            print("📥 Jam start response received")
+            
             if let error = error {
+                print("❌ Jam start network error: \(error.localizedDescription)")
                 DispatchQueue.main.async {
                     self?.jamState = .error("Network error: \(error.localizedDescription)")
                 }
@@ -959,13 +1045,21 @@ extension LoopAudioManager {
             }
             
             guard let httpResponse = response as? HTTPURLResponse else {
+                print("❌ Jam start: invalid response type")
                 DispatchQueue.main.async {
                     self?.jamState = .error("Invalid response from server")
                 }
                 return
             }
             
+            print("📊 Jam start HTTP status: \(httpResponse.statusCode)")
+            
             guard httpResponse.statusCode == 200 else {
+                print("❌ Jam start server error: \(httpResponse.statusCode)")
+                // Try to read error body
+                if let data = data, let errorBody = String(data: data, encoding: .utf8) {
+                    print("📄 Error body: \(errorBody)")
+                }
                 DispatchQueue.main.async {
                     self?.jamState = .error("Server error: \(httpResponse.statusCode)")
                 }
@@ -973,18 +1067,24 @@ extension LoopAudioManager {
             }
             
             guard let data = data else {
+                print("❌ Jam start: no data received")
                 DispatchQueue.main.async {
                     self?.jamState = .error("No data received")
                 }
                 return
             }
             
-            // Parse response (unchanged)
+            print("📊 Jam start data received: \(data.count) bytes")
+            print("📄 Raw response: \(String(data: data, encoding: .utf8) ?? "Unable to decode")")
+            
+            // Parse response
             do {
                 let response = try JSONDecoder().decode(JamStartResponse.self, from: data)
+                print("✅ Parsed session ID: \(response.session_id)")
                 
                 DispatchQueue.main.async {
                     self?.jamState = .running(sessionID: response.session_id)
+                    print("🎯 Set jam state to running, about to start fetching")
                     
                     // Start the NEW sequential chunk fetching
                     self?.startSequentialJamFetching(sessionID: response.session_id)
@@ -996,6 +1096,7 @@ extension LoopAudioManager {
                 }
                 
             } catch {
+                print("❌ Jam start JSON parsing error: \(error.localizedDescription)")
                 DispatchQueue.main.async {
                     self?.jamState = .error("Failed to parse response: \(error.localizedDescription)")
                 }
@@ -1050,6 +1151,15 @@ extension LoopAudioManager {
         form.addField(name: "use_current_mix_as_style", value: useCurrentMixAsStyle ? "true" : "false")
         form.addField(name: "loop_weight",     value: String(format: "%.3f", cfg.loopWeight))
 
+        if cfg.meanAvailable {
+            form.addField(name: "mean", value: String(format: "%.4f", cfg.mean))
+        }
+        if let k = cfg.centroidCount, k > 0 {
+            // If user interacted with compact mixer, ensure centroidWeights reflect that:
+            
+            form.addField(name: "centroid_weights", value: cfg.centroidWeightsCSV)
+        }
+
         let (data, http) = try await postMultipart(
             fullURLOverride: fullURLOverride,
             path: "jam/update",
@@ -1067,9 +1177,12 @@ extension LoopAudioManager {
         jamLastIndex = 0  // Reset counter
         
         print("🔄 Started sequential jam fetching for session: \(sessionID)")
+        print("🎯 About to fetch first chunk...")
         
         // Immediately fetch the first chunk
         fetchNextSequentialChunk(sessionID: sessionID)
+        
+        print("✅ Initial fetch call completed")
     }
 
     private func fetchNextSequentialChunk(sessionID: String) {
@@ -1079,10 +1192,9 @@ extension LoopAudioManager {
         }
         
         // Call the NEW /jam/next endpoint (no query params needed)
-        guard let url = URL(string: "https://thecollabagepatch-magenta-retry.hf.space/jam/next?session_id=\(sessionID)") else {
-            print("❌ Invalid jam/next URL")
-            return
-        }
+        var comps = URLComponents(url: magentaBaseURL.appendingPathComponent("jam/next"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "session_id", value: sessionID)]
+        guard let url = comps.url else { return }
         
         print("📡 Fetching next sequential chunk (after \(jamLastIndex))...")
         
@@ -1195,11 +1307,14 @@ extension LoopAudioManager {
             
             // Save as instrument loop (this queues it for later playback)
             DispatchQueue.main.async {
-                self.saveInstrumentLoop(data: audioData, bpm: chunk.metadata.bpm, metadata: metadataDict)
-                
-                // Immediately request the next chunk
-                self.fetchNextSequentialChunk(sessionID: sessionID)
-            }
+                    self.saveInstrumentLoop(data: audioData, bpm: chunk.metadata.bpm, metadata: metadataDict)
+                    
+                    // ✅ Only fetch the SECOND chunk immediately to bootstrap the pipeline
+                    // After that, let playback drive fetching
+                    if chunk.index <= 1 {
+                        self.fetchNextSequentialChunk(sessionID: sessionID)
+                    }
+                }
             
             // ❌ DON'T mark consumed here - wait for actual playback!
             // self.markChunkConsumed(sessionID: sessionID, chunkIndex: chunk.index)
@@ -1214,9 +1329,11 @@ extension LoopAudioManager {
 
     // Optional: Mark chunk as consumed for better backend flow control
     private func markChunkConsumed(sessionID: String, chunkIndex: Int) {
-        guard let url = URL(string: "https://thecollabagepatch-magenta-retry.hf.space/jam/consume") else {
-            return
-        }
+        print("🔄 markChunkConsumed called - sessionID: \(sessionID), chunkIndex: \(chunkIndex)")
+        
+        let url = magentaBaseURL.appendingPathComponent("jam/consume")
+        
+        print("📤 Making consume request for chunk \(chunkIndex)")
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -1229,9 +1346,12 @@ extension LoopAudioManager {
         request.httpBody = formData.encode()
         
         URLSession.shared.dataTask(with: request) { data, response, error in
-            // Fire and forget - don't need to handle response
             if let error = error {
-                print("⚠️ Failed to mark chunk \(chunkIndex) consumed: \(error.localizedDescription)")
+                print("❌ Consume request error: \(error.localizedDescription)")
+            } else if let httpResponse = response as? HTTPURLResponse {
+                print("✅ Consume request completed with status: \(httpResponse.statusCode)")
+            } else {
+                print("⚠️ Consume request completed with unknown response type")
             }
         }.resume()
     }
@@ -1239,10 +1359,9 @@ extension LoopAudioManager {
     // MARK: - Enhanced Status Checking (Optional)
     
     func getJamStatus(sessionID: String, completion: @escaping (JamStatusResponse?) -> Void) {
-        guard let url = URL(string: "https://thecollabagepatch-magenta-retry.hf.space/jam/status?session_id=\(sessionID)") else {
-            completion(nil)
-            return
-        }
+        var comps = URLComponents(url: magentaBaseURL.appendingPathComponent("jam/status"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "session_id", value: sessionID)]
+        guard let url = comps.url else { return }
         
         URLSession.shared.dataTask(with: url) { data, response, error in
             guard let data = data,
@@ -1272,12 +1391,7 @@ extension LoopAudioManager {
         print("🛑 Stopping jam session: \(sessionID)")
         
         // Call the actual /jam/stop endpoint (unchanged)
-        guard let url = URL(string: "https://thecollabagepatch-magenta-retry.hf.space/jam/stop") else {
-            DispatchQueue.main.async {
-                self.jamState = .error("Invalid stop URL")
-            }
-            return
-        }
+        let url = magentaBaseURL.appendingPathComponent("jam/stop")
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -1367,13 +1481,7 @@ extension LoopAudioManager {
             }
 
             // Build request to the Space
-            guard let url = URL(string: "https://thecollabagepatch-magenta-retry.hf.space/generate") else {
-                DispatchQueue.main.async {
-                    self.errorMessage = "Invalid Magenta URL"
-                }
-                cleanupGeneration(for: .instruments)
-                return
-            }
+            let url = magentaBaseURL.appendingPathComponent("generate")
 
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
@@ -1472,4 +1580,36 @@ extension LoopAudioManager {
                 }
             }.resume()
         }
+}
+
+
+extension LoopAudioManager {
+    struct ModelAssetsStatusDTO: Decodable {
+        let repo_id: String?
+        let mean_loaded: Bool
+        let centroids_loaded: Bool
+        let centroid_count: Int?
+        let embedding_dim: Int?
+    }
+
+    func fetchModelAssetsStatus() {
+        let url = magentaBaseURL.appendingPathComponent("model/assets/status")
+        URLSession.shared.dataTask(with: url) { [weak self] data, resp, _ in
+            guard
+                let self, let data,
+                let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                let dto = try? JSONDecoder().decode(ModelAssetsStatusDTO.self, from: data)
+            else { return }
+            DispatchQueue.main.async {
+                var status = MagentaConfig.AssetsStatus(
+                    repo_id: dto.repo_id,
+                    mean_loaded: dto.mean_loaded,
+                    centroids_loaded: dto.centroids_loaded,
+                    centroid_count: dto.centroid_count,
+                    embedding_dim: dto.embedding_dim
+                )
+                self.magentaConfig.applyAssetsStatus(status)
+            }
+        }.resume()
+    }
 }

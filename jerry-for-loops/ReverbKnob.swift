@@ -22,7 +22,7 @@ struct ReverbKnob: View {
     private let maxAmount: Float = 100.0    // 100% = very wet with long decay
     private let minAngle: Double = -135     // Start angle
     private let maxAngle: Double = 135      // End angle
-    private let knobSize: CGFloat = 60
+    private let knobSize: CGFloat = 45
     
     var body: some View {
         VStack(spacing: 4) {
@@ -54,7 +54,7 @@ struct ReverbKnob: View {
                 // Center dot
                 Circle()
                     .fill(Color.white)
-                    .frame(width: 6, height: 6)
+                    .frame(width: 4, height: 4)
                 
                 // Knob indicator line
                 Rectangle()

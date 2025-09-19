@@ -13,10 +13,10 @@ struct jerry_for_loopsApp: App {
 
     var body: some Scene {
         WindowGroup {
-            LoopJamView()
-                .environment(\.managedObjectContext, persistenceController.container.viewContext)
-                .preferredColorScheme(.dark) // Force dark mode
-                .statusBarHidden(true) // Hide status bar for immersive experience
+            RootView()
+                             .environment(\.managedObjectContext, persistenceController.container.viewContext)
+                             .preferredColorScheme(.dark)
+                             .statusBarHidden(true)
         }
     }
     

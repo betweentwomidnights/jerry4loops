@@ -1,6 +1,25 @@
 import SwiftUI
 
+@MainActor
+final class BackendHealthVM: ObservableObject {
+    @Published var healthy: Bool? = nil
+    @Published var message: String? = nil
+    @Published var config: ModelConfigResponse? = nil
+    @Published var checking = false
+
+    func check(using service: ModelService) async {
+        checking = true; defer { checking = false }
+        let res = await service.getHealth()
+        healthy = res.ok
+        message = res.message
+        guard res.ok else { return }
+        do { config = try await service.getConfig() } catch { message = error.localizedDescription }
+    }
+}
+
 struct InstrumentConfigPopup: View {
+    @EnvironmentObject private var service: ModelService
+    @StateObject private var backend = BackendHealthVM()
     @Binding var isVisible: Bool
     let audioManager: LoopAudioManager
     let globalBPM: Int
@@ -17,7 +36,7 @@ struct InstrumentConfigPopup: View {
     // Style transfer state
     @State private var styleStrength: Float = 0.65
     
-    // NEW: Riff transfer state
+    // Riff transfer state
     @State private var selectedKey: String = "gsharp"
     @State private var riffStyleStrength: Float = 0.65
     
@@ -29,18 +48,12 @@ struct InstrumentConfigPopup: View {
     }
     
     @State private var magentaStyles: [StyleEntry] = [StyleEntry(text: "", weight: 1.0)]
-    @State private var magentaLoopWeight: Double = 1.0 // 0–1
-    @State private var magentaBars: Int = 4 // 4 or 8
-    @State private var magentaTemperature: Double = 1.2 // 0–4
-    @State private var magentaTopK: Int = 30 // 0–1024
-    @State private var magentaGuidance: Double = 1.5 // 0–10
-    
-    private var canUseMagenta: Bool {
-        audioManager.playerManager?.drumAudioURL != nil &&
-        audioManager.playerManager?.instrumentAudioURL != nil
-    }
-    
-    @State private var magentaKeepJamming: Bool = false   // NEW
+    @State private var magentaLoopWeight: Double = 1.0
+    @State private var magentaBars: Int = 4
+    @State private var magentaTemperature: Double = 1.2
+    @State private var magentaTopK: Int = 30
+    @State private var magentaGuidance: Double = 1.5
+    @State private var magentaKeepJamming: Bool = false
     
     // Mode selection
     @State private var selectedMode: GenerationMode = .generate
@@ -48,7 +61,7 @@ struct InstrumentConfigPopup: View {
     enum GenerationMode {
         case generate
         case styleTransfer
-        case riffTransfer // keep for future use
+        case riffTransfer
         case magenta
     }
     
@@ -58,68 +71,195 @@ struct InstrumentConfigPopup: View {
                audioManager.playerManager?.instrumentAudioURL != nil
     }
     
+    private var canUseMagenta: Bool {
+        audioManager.playerManager?.drumAudioURL != nil &&
+        audioManager.playerManager?.instrumentAudioURL != nil
+    }
+    
     private var availableKeys: [String] {
         return ["c", "csharp", "d", "dsharp", "e", "f", "fsharp", "g", "gsharp", "a", "asharp", "b"]
     }
     
+    // Layout calculations
+    private let topSafeArea: CGFloat = 100  // Space for top UI elements
+    private let bottomSafeArea: CGFloat = 50  // Space for home indicator
+    private let maxPopupHeight: CGFloat = UIScreen.main.bounds.height - 150
+    
     var body: some View {
-        ZStack {
-            // Background overlay
-            if isVisible {
-                Color.black.opacity(0.7)
-                    .ignoresSafeArea() // <- modern API
-                    .onTapGesture {
-                        withAnimation(.easeInOut(duration: 0.3)) {
-                            isVisible = false
+        GeometryReader { geometry in
+            ZStack {
+                // Background overlay
+                if isVisible {
+                    Color.black.opacity(0.7)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                isVisible = false
+                            }
                         }
-                    }
-                    .transition(.opacity)
-            }
-
-            // Main popup
-            if isVisible {
-                VStack(spacing: 20) {
-                    headerView
-                    mainContent
+                        .transition(.opacity)
                 }
-                .padding(24)
-                .background(
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(Color.black.opacity(0.95))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 16)
-                                .stroke(borderColor, lineWidth: 2)
-                        )
-                )
-                .frame(maxWidth: 380)
-                .scaleEffect(isVisible ? 1.0 : 0.8)
-                .opacity(isVisible ? 1.0 : 0.0)
-                .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isVisible)
 
-                // Attach the syncing here so it’s unambiguously the popup’s lifecycle
-                .onAppear {
-                    let shared = audioManager.magentaConfig
-                    self.magentaStyles = shared.styles.map { StyleEntry(text: $0.text, weight: $0.weight) }
-                    self.magentaLoopWeight = shared.loopWeight
-                    self.magentaBars = shared.bars
-                    self.magentaTemperature = shared.temperature
-                    self.magentaTopK = shared.topK
-                    self.magentaGuidance = shared.guidanceWeight
-                }
-                .onDisappear {
-                    let shared = audioManager.magentaConfig
-                    shared.styles = self.magentaStyles.map { .init(text: $0.text, weight: $0.weight) }
-                    shared.loopWeight = self.magentaLoopWeight
-                    shared.bars = self.magentaBars
-                    shared.temperature = self.magentaTemperature
-                    shared.topK = self.magentaTopK
-                    shared.guidanceWeight = self.magentaGuidance
+                // Main popup
+                if isVisible {
+                    popupContent(in: geometry)
+                        .scaleEffect(isVisible ? 1.0 : 0.8)
+                        .opacity(isVisible ? 1.0 : 0.0)
+                        .animation(.spring(response: 0.4, dampingFraction: 0.8), value: isVisible)
+                        .onAppear {
+                            syncMagentaConfig()
+                        }
+                        .onDisappear {
+                            saveMagentaConfig()
+                        }
                 }
             }
         }
     }
-
     
+    private func popupContent(in geometry: GeometryProxy) -> some View {
+        VStack(spacing: 0) {
+            // Fixed header section
+            fixedHeaderSection
+            
+            // Dynamic content area based on mode
+            if selectedMode == .magenta {
+                magentaContentLayout(in: geometry)
+            } else {
+                standardContentLayout
+            }
+            
+            // Fixed footer section (always visible)
+            fixedFooterSection
+        }
+        .padding(24)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.black.opacity(0.95))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(borderColor, lineWidth: 2)
+                )
+        )
+        .frame(maxWidth: 380)
+        .frame(maxHeight: maxPopupHeight)
+        .task { await backend.check(using: service) }
+        .onChange(of: selectedMode) { newMode in
+            if newMode == .magenta {
+                Task { await backend.check(using: service) }
+            }
+        }
+    }
+    
+    // MARK: - Fixed Header Section
+    private var fixedHeaderSection: some View {
+        VStack(spacing: 20) {
+            // Header with close button
+            headerView
+            
+            // BPM display
+            bpmDisplaySection
+            
+            // Mode toggle
+            modeToggleSection
+        }
+    }
+    
+    // MARK: - Standard Content Layout (non-Magenta modes)
+    private var standardContentLayout: some View {
+        VStack(spacing: 16) {
+            // Prompt section
+            promptSection
+            
+            // Mode-specific sections
+            if selectedMode == .styleTransfer {
+                styleTransferSection
+            } else if selectedMode == .riffTransfer {
+                riffTransferSection
+            }
+            
+            // Bars section
+            barsSection
+            
+            // Advanced toggle and content
+            advancedToggle
+            if showAdvanced {
+                advancedSection
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: showAdvanced)
+    }
+    
+    // MARK: - Magenta Content Layout (with scrolling)
+    private func magentaContentLayout(in geometry: GeometryProxy) -> some View {
+        VStack(spacing: 0) {
+            // Fixed top section (backend status)
+            magentaStatusBlock
+                .padding(.bottom, 12)
+            
+            // Scrollable middle section
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(spacing: 12) {
+                        // Styles and weights
+                        magentaStylesSection
+                            .id("styles")
+                        
+                        // Loop influence
+                        magentaLoopInfluenceSection
+                            .id("loop-influence")
+                        
+                        // Advanced Magenta settings
+                        magentaAdvancedSection
+                    }
+                    .padding(.horizontal, 4) // Small padding for scroll indicators
+                    .padding(.bottom, 8) // Extra bottom padding to ensure advanced section is fully visible
+                }
+                .frame(maxHeight: calculateScrollAreaHeight(in: geometry))
+                .onChange(of: showAdvanced) { isAdvanced in
+                    if isAdvanced {
+                        // Add a small delay to allow the DisclosureGroup to expand first
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            withAnimation(.easeInOut(duration: 0.4)) {
+                                proxy.scrollTo("advanced", anchor: .center)
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Fixed bottom section (bars and jam toggle) - moved from scrollable area
+            magentaFixedBottomSection
+                .padding(.top, 12)
+        }
+    }
+    
+    // MARK: - Fixed Footer Section
+    private var fixedFooterSection: some View {
+        VStack(spacing: 16) {
+            // Generate button
+            generateButton
+            
+            // Error messages
+            if let errorMessage = audioManager.errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundColor(.red)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(.top, 20)
+    }
+    
+    // MARK: - Layout Calculations
+    private func calculateScrollAreaHeight(in geometry: GeometryProxy) -> CGFloat {
+        let availableHeight = geometry.size.height
+        let fixedContentHeight: CGFloat = 400 // Estimated height of fixed sections
+        let scrollAreaHeight = availableHeight - fixedContentHeight
+        return max(scrollAreaHeight, 200) // Minimum scroll area height
+    }
+    
+    // MARK: - Border Color
     private var borderColor: Color {
         switch selectedMode {
         case .generate: return .purple
@@ -129,7 +269,7 @@ struct InstrumentConfigPopup: View {
         }
     }
     
-    // MARK: - Header
+    // MARK: - Header View
     private var headerView: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
@@ -183,140 +323,61 @@ struct InstrumentConfigPopup: View {
         }
     }
     
-    // MARK: - Main Content
-    private var mainContent: some View {
-        VStack(spacing: 16) {
-            // BPM Display
-            bpmDisplaySection
+    // MARK: - BPM Display Section
+    private var bpmDisplaySection: some View {
+        VStack(spacing: 4) {
+            Text("BPM (Global)")
+                .font(.caption)
+                .foregroundColor(.gray)
             
-            // Mode Toggle Section (3 modes now!)
-            modeToggleSection
-            
-            // Prompt Section
-            if selectedMode == .magenta {
-                magentaStylesSection // new: rows of [TextField + 0-1 Slider], + add-row, loop_weight, bars, Advanced
-            } else {
-                promptSection
-            }
-            
-            // Mode-specific sections
-            if selectedMode == .styleTransfer {
-                styleTransferSection
-            } else if selectedMode == .riffTransfer {
-                riffTransferSection
-            }
-            
-            if selectedMode != .magenta {
-                barsSection
-            }
-            
-            if selectedMode != .magenta {
-                advancedToggle
-                if showAdvanced { advancedSection }
-            }
-            
-            // Generate Button
-            generateButton
-            
-            // Error Display
-            if let errorMessage = audioManager.errorMessage {
-                Text(errorMessage)
-                    .font(.caption)
-                    .foregroundColor(.red)
-                    .multilineTextAlignment(.center)
-            }
+            Text("\(globalBPM)")
+                .font(.title2)
+                .fontWeight(.bold)
+                .foregroundColor(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.green.opacity(0.2))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.green, lineWidth: 1)
+                        )
+                )
         }
     }
     
-    // MARK: - Mode Toggle Section (3 modes!)
+    // MARK: - Mode Toggle Section
     private var modeToggleSection: some View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
                 // Generate Mode
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        selectedMode = .generate
-                    }
-                }) {
-                    VStack(spacing: 4) {
-                        Image(systemName: "pianokeys")
-                            .font(.title3)
-                        Text("Generate")
-                            .font(.caption2)
-                            .fontWeight(.bold)
-                    }
-                    .foregroundColor(selectedMode == .generate ? .white : .gray)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(selectedMode == .generate ? Color.purple.opacity(0.3) : Color.gray.opacity(0.2))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(selectedMode == .generate ? Color.purple : Color.gray.opacity(0.5), lineWidth: 2)
-                            )
-                    )
-                }
+                modeButton(
+                    mode: .generate,
+                    icon: "pianokeys",
+                    label: "Generate",
+                    isEnabled: true,
+                    color: .purple
+                )
                 
                 // Style Transfer Mode
-                Button(action: {
-                    if canUseStyleTransfer {
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            selectedMode = .styleTransfer
-                        }
-                    }
-                }) {
-                    VStack(spacing: 4) {
-                        Image(systemName: "paintbrush.fill")
-                            .font(.title3)
-                        Text("Style Transfer")
-                            .font(.caption2)
-                            .fontWeight(.bold)
-                    }
-                    .foregroundColor(selectedMode == .styleTransfer ? .white : (canUseStyleTransfer ? .orange : .gray))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(selectedMode == .styleTransfer ? Color.orange.opacity(0.3) : Color.gray.opacity(0.2))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(selectedMode == .styleTransfer ? Color.orange : (canUseStyleTransfer ? Color.orange.opacity(0.5) : Color.gray.opacity(0.3)), lineWidth: 2)
-                            )
-                    )
-                }
-                .disabled(!canUseStyleTransfer)
+                modeButton(
+                    mode: .styleTransfer,
+                    icon: "paintbrush.fill",
+                    label: "Style Transfer",
+                    isEnabled: canUseStyleTransfer,
+                    color: .orange
+                )
                 
-                // NEW: Riff Transfer Mode
-                Button(action: {
-                    if canUseMagenta {
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            selectedMode = .magenta
-                        }
-                    }
-                }) {
-                    VStack(spacing: 4) {
-                        Image(systemName: "wand.and.stars")
-                            .font(.title3)
-                        Text("Magenta")
-                            .font(.caption2)
-                            .fontWeight(.bold)
-                    }
-                    .foregroundColor(selectedMode == .magenta ? .white : (canUseMagenta ? .pink : .gray))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(selectedMode == .magenta ? Color.pink.opacity(0.3) : Color.gray.opacity(0.2))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(selectedMode == .magenta ? Color.pink : (canUseMagenta ? Color.pink.opacity(0.5) : Color.gray.opacity(0.3)), lineWidth: 2)
-                            )
-                    )
-                }
-                .disabled(!canUseMagenta)
-                }
-            
+                // Magenta Mode
+                modeButton(
+                    mode: .magenta,
+                    icon: "wand.and.stars",
+                    label: "Magenta",
+                    isEnabled: canUseMagenta,
+                    color: .pink
+                )
+            }
             
             // Mode availability indicators
             if selectedMode == .styleTransfer && !canUseStyleTransfer {
@@ -332,183 +393,86 @@ struct InstrumentConfigPopup: View {
             }
         }
     }
-
-// MARK: - Magenta Styles Section
-private var magentaStylesSection: some View {
-    VStack(spacing: 12) {
-
-        // Styles list
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Styles & Weights")
-                    .font(.subheadline)
-                    .foregroundColor(.white)
-                Spacer()
-                Button {
-                    magentaStyles.append(StyleEntry(text: "", weight: 1.0))
-                    if magentaStyles.count > 4 { magentaStyles.removeLast() } // optional cap
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.caption)
-                        .foregroundColor(.pink)
-                        .padding(6)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.gray.opacity(0.25)))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.pink.opacity(0.6), lineWidth: 1))
+    
+    private func modeButton(mode: GenerationMode, icon: String, label: String, isEnabled: Bool, color: Color) -> some View {
+        Button(action: {
+            if isEnabled {
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    selectedMode = mode
                 }
-                .disabled(magentaStyles.count >= 4) // allow 2–4 entries; tweak as you like
             }
-
-            ForEach($magentaStyles) { $entry in
-                VStack(spacing: 6) {
-                    HStack(spacing: 8) {
-                        TextField("e.g. acid house, trumpet, lofi", text: $entry.text)
-                            .textFieldStyle(RoundedBorderTextFieldStyle())
-                            .font(.subheadline)
-
-                        // Remove row
-                        if magentaStyles.count > 1 {
-                            Button {
-                                if let idx = magentaStyles.firstIndex(where: { $0.id == entry.id }) {
-                                    magentaStyles.remove(at: idx)
-                                }
-                            } label: {
-                                Image(systemName: "minus.circle.fill")
-                                    .foregroundColor(.pink)
-                            }
-                        }
-                    }
-
-                    HStack {
-                        Text("Weight")
-                            .font(.caption)
-                            .foregroundColor(.gray)
-                        Slider(value: $entry.weight, in: 0...1, step: 0.01)
-                        Text(String(format: "%.2f", entry.weight))
-                            .font(.caption2)
-                            .foregroundColor(.pink)
-                            .frame(width: 38, alignment: .trailing)
-                    }
-                }
-                .padding(10)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.pink.opacity(0.08)))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.pink.opacity(0.25), lineWidth: 1))
-            }
-        }
-
-        // Loop influence
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Loop Influence")
-                    .font(.subheadline)
-                    .foregroundColor(.white)
-                Spacer()
-                Text(String(format: "%.2f", magentaLoopWeight))
-                    .font(.subheadline)
+        }) {
+            VStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.title3)
+                Text(label)
+                    .font(.caption2)
                     .fontWeight(.bold)
-                    .foregroundColor(.pink)
             }
-            Slider(value: $magentaLoopWeight, in: 0...1, step: 0.01)
+            .foregroundColor(selectedMode == mode ? .white : (isEnabled ? color : .gray))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(selectedMode == mode ? color.opacity(0.3) : Color.gray.opacity(0.2))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(selectedMode == mode ? color : (isEnabled ? color.opacity(0.5) : Color.gray.opacity(0.3)), lineWidth: 2)
+                    )
+            )
         }
-
-        // Bars (4 or 8)
+        .disabled(!isEnabled)
+    }
+    
+    // MARK: - Prompt Section
+    private var promptSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Bars")
+            Text(promptTitle)
                 .font(.subheadline)
                 .foregroundColor(.white)
-            HStack(spacing: 8) {
-                ForEach([4, 8], id: \.self) { count in
-                    Button {
-                        magentaBars = count
-                    } label: {
-                        Text("\(count)")
-                            .font(.caption)
-                            .fontWeight(.bold)
-                            .foregroundColor(magentaBars == count ? .black : .white)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(magentaBars == count ? Color.pink : Color.gray.opacity(0.3))
-                            .cornerRadius(6)
-                    }
-                }
-            }
-        }
-        
-        // Keep jamming toggle
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("jam")
+            
+            HStack(spacing: 12) {
+                TextField("describe your instruments...", text: $prompt)
+                    .textFieldStyle(RoundedBorderTextFieldStyle())
                     .font(.subheadline)
-                    .foregroundColor(.white)
-                Spacer()
-                Toggle("", isOn: $magentaKeepJamming)
-                    .labelsHidden()
-                    .tint(.pink)
-            }
-            Text("When enabled, the main button will start a continuous Magenta session.")
-                .font(.caption2)
-                .foregroundColor(.gray)
-        }
-        .padding(.top, 4)
-
-        // Advanced (Magenta-specific)
-        DisclosureGroup {
-            VStack(spacing: 12) {
-                HStack {
-                    Text("Temperature")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                    Spacer()
-                    Text(String(format: "%.2f", magentaTemperature))
-                        .font(.caption2)
-                        .foregroundColor(.pink)
+                
+                Button(action: randomizePrompt) {
+                    Image(systemName: "dice")
+                        .font(.title2)
+                        .foregroundColor(promptButtonColor)
+                        .frame(width: 40, height: 40)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color.gray.opacity(0.3))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(promptButtonColor, lineWidth: 1)
+                        )
                 }
-                Slider(value: $magentaTemperature, in: 0...4.0, step: 0.05)
-
-                HStack {
-                    Text("Top-K")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                    Spacer()
-                    Text("\(magentaTopK)")
-                        .font(.caption2)
-                        .foregroundColor(.pink)
-                }
-                Slider(value: Binding(
-                    get: { Double(magentaTopK) },
-                    set: { magentaTopK = Int($0.rounded()) }
-                ), in: 0...1024, step: 1)
-
-                HStack {
-                    Text("Guidance Weight")
-                        .font(.caption)
-                        .foregroundColor(.gray)
-                    Spacer()
-                    Text(String(format: "%.2f", magentaGuidance))
-                        .font(.caption2)
-                        .foregroundColor(.pink)
-                }
-                Slider(value: $magentaGuidance, in: 0...10.0, step: 0.05)
-            }
-            .padding(.top, 8)
-        } label: {
-            HStack(spacing: 8) {
-                Text("Advanced (Magenta)")
-                    .font(.subheadline)
-                    .foregroundColor(.gray)
-                Image(systemName: "chevron.down")
-                    .font(.caption)
-                    .foregroundColor(.gray)
             }
         }
-        .padding(.vertical, 8)
     }
-    .transition(.asymmetric(
-        insertion: .move(edge: .top).combined(with: .opacity),
-        removal: .move(edge: .top).combined(with: .opacity)
-    ))
-}
     
-    // MARK: - Style Transfer Section (existing)
+    private var promptTitle: String {
+        switch selectedMode {
+        case .generate:      return "Instrument Style"
+        case .styleTransfer: return "Target Instrument Style"
+        case .riffTransfer:  return "Target Style from Riffs"
+        case .magenta:       return "Styles & Weights"
+        }
+    }
+    
+    private var promptButtonColor: Color {
+        switch selectedMode {
+        case .generate: return .purple
+        case .styleTransfer: return .orange
+        case .riffTransfer: return .green
+        case .magenta: return .pink
+        }
+    }
+    
+    // MARK: - Style Transfer Section
     private var styleTransferSection: some View {
         VStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 8) {
@@ -561,7 +525,7 @@ private var magentaStylesSection: some View {
         ))
     }
     
-    // MARK: - NEW: Riff Transfer Section
+    // MARK: - Riff Transfer Section
     private var riffTransferSection: some View {
         VStack(spacing: 12) {
             // Key selector
@@ -650,78 +614,6 @@ private var magentaStylesSection: some View {
         }
     }
     
-    // MARK: - BPM Display Section
-    private var bpmDisplaySection: some View {
-        VStack(spacing: 4) {
-            Text("BPM (Global)")
-                .font(.caption)
-                .foregroundColor(.gray)
-            
-            Text("\(globalBPM)")
-                .font(.title2)
-                .fontWeight(.bold)
-                .foregroundColor(.white)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.green.opacity(0.2))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.green, lineWidth: 1)
-                        )
-                )
-        }
-    }
-    
-    // MARK: - Prompt Section
-    private var promptSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(promptTitle)
-                .font(.subheadline)
-                .foregroundColor(.white)
-            
-            HStack(spacing: 12) {
-                TextField("describe your instruments...", text: $prompt)
-                    .textFieldStyle(RoundedBorderTextFieldStyle())
-                    .font(.subheadline)
-                
-                Button(action: randomizePrompt) {
-                    Image(systemName: "dice")
-                        .font(.title2)
-                        .foregroundColor(promptButtonColor)
-                        .frame(width: 40, height: 40)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(Color.gray.opacity(0.3))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(promptButtonColor, lineWidth: 1)
-                        )
-                }
-            }
-        }
-    }
-    
-    private var promptTitle: String {
-        switch selectedMode {
-        case .generate:      return "Instrument Style"
-        case .styleTransfer: return "Target Instrument Style"
-        case .riffTransfer:  return "Target Style from Riffs"
-        case .magenta:       return "Styles & Weights" // or "" if hiding promptSection
-        }
-    }
-    
-    private var promptButtonColor: Color {
-        switch selectedMode {
-        case .generate: return .purple
-        case .styleTransfer: return .orange
-        case .riffTransfer: return .green
-        case .magenta: return .pink
-        }
-    }
-    
     // MARK: - Bars Section
     private var barsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -754,7 +646,7 @@ private var magentaStylesSection: some View {
         }
     }
     
-    // MARK: - Advanced Toggle & Section (existing)
+    // MARK: - Advanced Toggle & Section
     private var advancedToggle: some View {
         Button(action: {
             withAnimation(.easeInOut(duration: 0.25)) {
@@ -861,6 +753,304 @@ private var magentaStylesSection: some View {
         ))
     }
     
+    // MARK: - Magenta Status Block
+    private var magentaStatusBlock: some View {
+        Group {
+            if backend.healthy == false {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Magenta backend is offline.", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+
+                    Text("Open the Studio menu to verify the backend URL and wake the HF Space, then tap Recheck.")
+                        .font(.caption)
+                        .foregroundColor(.orange.opacity(0.9))
+
+                    Button {
+                        Task { await backend.check(using: service) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            if backend.checking { ProgressView().scaleEffect(0.9) }
+                            Text("Recheck")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.12)))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.35), lineWidth: 1))
+
+            } else if let c = backend.config {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "server.rack")
+                        Text(c.repo ?? "—").lineLimit(1)
+                        if let step = c.selected_step { Text("• step \(step)") }
+                        Spacer()
+                        if c.warmup_done {
+                            Label("warmed", systemImage: "bolt.fill").foregroundColor(.green)
+                        } else if c.loaded {
+                            Label("cold", systemImage: "snowflake").foregroundColor(.orange)
+                        }
+                        Button {
+                            Task { await backend.check(using: service) }
+                        } label: {
+                            if backend.checking { ProgressView() } else { Image(systemName: "arrow.clockwise") }
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Refresh model status")
+                    }
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                    if c.loaded && !c.warmup_done {
+                        Text("Heads-up: first Magenta chunk may be rough until warmup finishes.")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
+                }
+
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: "questionmark.circle")
+                        .foregroundColor(.secondary)
+                    Text("Tap Recheck to fetch current Magenta model status.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Button {
+                        Task { await backend.check(using: service) }
+                    } label: {
+                        if backend.checking { ProgressView() } else { Image(systemName: "arrow.clockwise") }
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+        }
+    }
+    
+    // MARK: - Magenta Styles Section (Scrollable)
+    private var magentaStylesSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Styles & Weights")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.white)
+                Spacer()
+                Button {
+                    magentaStyles.append(StyleEntry(text: "", weight: 1.0))
+                    if magentaStyles.count > 4 { magentaStyles.removeLast() }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.caption2)
+                        .foregroundColor(.pink)
+                        .padding(4)
+                        .background(RoundedRectangle(cornerRadius: 4).fill(Color.gray.opacity(0.25)))
+                        .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.pink.opacity(0.6), lineWidth: 1))
+                }
+                .disabled(magentaStyles.count >= 4)
+            }
+
+            ForEach($magentaStyles) { $entry in
+                VStack(spacing: 4) {
+                    HStack(spacing: 6) {
+                        TextField("e.g. acid house, trumpet, lofi", text: $entry.text)
+                            .textFieldStyle(RoundedBorderTextFieldStyle())
+                            .font(.caption)
+                        
+                        Button(action: {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                entry.text = MagentaPrompts.getNextCyclingStyle()
+                            }
+                            let impactFeedback = UIImpactFeedbackGenerator(style: .light)
+                            impactFeedback.impactOccurred()
+                        }) {
+                            Image(systemName: "dice")
+                                .font(.caption2)
+                                .foregroundColor(.pink)
+                                .frame(width: 28, height: 28)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .fill(Color.gray.opacity(0.3))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 4)
+                                        .stroke(.pink, lineWidth: 1)
+                                )
+                        }
+
+                        if magentaStyles.count > 1 {
+                            Button {
+                                if let idx = magentaStyles.firstIndex(where: { $0.id == entry.id }) {
+                                    magentaStyles.remove(at: idx)
+                                }
+                            } label: {
+                                Image(systemName: "minus.circle.fill")
+                                    .font(.caption)
+                                    .foregroundColor(.pink)
+                            }
+                        }
+                    }
+
+                    HStack {
+                        Text("Weight")
+                            .font(.caption2)
+                            .foregroundColor(.gray)
+                        Slider(value: $entry.weight, in: 0...1, step: 0.01)
+                            .frame(height: 20)
+                        Text(String(format: "%.2f", entry.weight))
+                            .font(.caption2)
+                            .foregroundColor(.pink)
+                            .frame(width: 32, alignment: .trailing)
+                    }
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.pink.opacity(0.08)))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.pink.opacity(0.25), lineWidth: 1))
+            }
+        }
+        .disabled(backend.healthy != true || !(backend.config?.loaded ?? false))
+    }
+    
+    // MARK: - Magenta Loop Influence Section (Scrollable)
+    private var magentaLoopInfluenceSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Loop Influence")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.white)
+                Spacer()
+                Text(String(format: "%.2f", magentaLoopWeight))
+                    .font(.caption)
+                    .fontWeight(.bold)
+                    .foregroundColor(.pink)
+            }
+            Slider(value: $magentaLoopWeight, in: 0...1, step: 0.01)
+                .frame(height: 20)
+        }
+    }
+    
+    // MARK: - Magenta Advanced Section (Scrollable)
+    private var magentaAdvancedSection: some View {
+        DisclosureGroup(isExpanded: $showAdvanced) {
+            VStack(spacing: 8) {
+                HStack {
+                    Text("Temperature")
+                        .font(.caption2)
+                        .foregroundColor(.gray)
+                    Spacer()
+                    Text(String(format: "%.2f", magentaTemperature))
+                        .font(.caption2)
+                        .foregroundColor(.pink)
+                }
+                Slider(value: $magentaTemperature, in: 0...4.0, step: 0.05)
+                    .frame(height: 20)
+
+                HStack {
+                    Text("Top-K")
+                        .font(.caption2)
+                        .foregroundColor(.gray)
+                    Spacer()
+                    Text("\(magentaTopK)")
+                        .font(.caption2)
+                        .foregroundColor(.pink)
+                }
+                Slider(value: Binding(
+                    get: { Double(magentaTopK) },
+                    set: { magentaTopK = Int($0.rounded()) }
+                ), in: 0...1024, step: 1)
+                    .frame(height: 20)
+
+                HStack {
+                    Text("Guidance Weight")
+                        .font(.caption2)
+                        .foregroundColor(.gray)
+                    Spacer()
+                    Text(String(format: "%.2f", magentaGuidance))
+                        .font(.caption2)
+                        .foregroundColor(.pink)
+                }
+                Slider(value: $magentaGuidance, in: 0...10.0, step: 0.05)
+                    .frame(height: 20)
+            }
+            .padding(.top, 6)
+        } label: {
+            HStack(spacing: 6) {
+                Text("Advanced (Magenta)")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .foregroundColor(.gray)
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+                    .foregroundColor(.gray)
+                    .rotationEffect(.degrees(showAdvanced ? 180 : 0))
+                    .animation(.easeInOut(duration: 0.2), value: showAdvanced)
+            }
+        }
+        .padding(.vertical, 6)
+        .id("advanced")
+    }
+    
+    // MARK: - Magenta Fixed Bottom Section (Non-scrollable)
+    private var magentaFixedBottomSection: some View {
+        VStack(spacing: 12) {
+            // Bars and Jam toggle on same row
+            HStack {
+                // Bars section (left side)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Bars")
+                        .font(.subheadline)
+                        .foregroundColor(.white)
+                    HStack(spacing: 8) {
+                        ForEach([4, 8], id: \.self) { count in
+                            Button {
+                                magentaBars = count
+                            } label: {
+                                Text("\(count)")
+                                    .font(.caption)
+                                    .fontWeight(.bold)
+                                    .foregroundColor(magentaBars == count ? .black : .white)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(magentaBars == count ? Color.pink : Color.gray.opacity(0.3))
+                                    .cornerRadius(6)
+                            }
+                        }
+                    }
+                }
+                
+                Spacer()
+                
+                // Jam toggle section (right side)
+                VStack(alignment: .trailing, spacing: 6) {
+                    Text("jam")
+                        .font(.subheadline)
+                        .foregroundColor(.white)
+                    Toggle("", isOn: $magentaKeepJamming)
+                        .labelsHidden()
+                        .tint(.pink)
+                }
+            }
+            
+            // Jam description (full width below)
+            Text("When enabled, the main button will start a continuous Magenta session.")
+                .font(.caption2)
+                .foregroundColor(.gray)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.top, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.pink.opacity(0.05))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.pink.opacity(0.2), lineWidth: 1)
+                )
+        )
+        .padding(.horizontal, 4)
+    }
+    
     // MARK: - Generate Button
     private var generateButton: some View {
         Button(action: generateInstrumentLoop) {
@@ -884,9 +1074,9 @@ private var magentaStylesSection: some View {
         }
         .disabled(
             audioManager.isGenerating ||
-            (selectedMode != .magenta &&
-             prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ||
-            (selectedMode == .styleTransfer && !canUseStyleTransfer)
+            (selectedMode != .magenta && prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ||
+            (selectedMode == .styleTransfer && !canUseStyleTransfer) ||
+            (selectedMode == .magenta && (backend.healthy != true || !(backend.config?.loaded ?? false)))
         )
     }
     
@@ -922,10 +1112,39 @@ private var magentaStylesSection: some View {
         }
     }
     
-    // MARK: - Actions
+    // MARK: - Config Sync Methods
+    private func syncMagentaConfig() {
+        let shared = audioManager.magentaConfig
+        self.magentaStyles = shared.styles.map { StyleEntry(text: $0.text, weight: $0.weight) }
+        self.magentaLoopWeight = shared.loopWeight
+        self.magentaBars = shared.bars
+        self.magentaTemperature = shared.temperature
+        self.magentaTopK = shared.topK
+        self.magentaGuidance = shared.guidanceWeight
+    }
+    
+    private func saveMagentaConfig() {
+        let shared = audioManager.magentaConfig
+        shared.styles = self.magentaStyles.map { .init(text: $0.text, weight: $0.weight) }
+        shared.loopWeight = self.magentaLoopWeight
+        shared.bars = self.magentaBars
+        shared.temperature = self.magentaTemperature
+        shared.topK = self.magentaTopK
+        shared.guidanceWeight = self.magentaGuidance
+    }
+    
+    // MARK: - Action Methods
     private func randomizePrompt() {
         withAnimation(.easeInOut(duration: 0.2)) {
-            prompt = InstrumentPrompts.getCleanInstrumentPrompt()
+            if selectedMode == .magenta {
+                if !magentaStyles.isEmpty {
+                    magentaStyles[0].text = MagentaPrompts.getNextCyclingStyle()
+                } else {
+                    magentaStyles.append(StyleEntry(text: MagentaPrompts.getNextCyclingStyle(), weight: 1.0))
+                }
+            } else {
+                prompt = InstrumentPrompts.getCleanInstrumentPrompt()
+            }
         }
         
         let impactFeedback = UIImpactFeedbackGenerator(style: .light)
@@ -978,9 +1197,9 @@ private var magentaStylesSection: some View {
             )
         case .magenta:
             if magentaKeepJamming {
-                let req = LoopAudioManager.PendingJamRequest(
+                audioManager.requestStartMagentaJam(
                     bpm: globalBPM,
-                    barsPerChunk: magentaBars, // 4 or 8
+                    barsPerChunk: magentaBars,
                     styles: magentaStyles.map(\.text).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty },
                     styleWeights: magentaStyles.map(\.weight),
                     loopWeight: magentaLoopWeight,
@@ -988,20 +1207,7 @@ private var magentaStylesSection: some View {
                     topK: magentaTopK,
                     guidanceWeight: magentaGuidance
                 )
-                audioManager.requestStartMagentaJam(
-                    bpm: req.bpm,
-                    barsPerChunk: req.barsPerChunk,
-                    styles: req.styles,
-                    styleWeights: req.styleWeights,
-                    loopWeight: req.loopWeight,
-                    temperature: req.temperature,
-                    topK: req.topK,
-                    guidanceWeight: req.guidanceWeight
-                )
-                // close popup immediately; main view will now show "Stop Jamming"
-                //dismiss() // however you dismiss the popup (Binding/Environment)
             } else {
-                // existing one-shot generateInstrumentMagenta(...)
                 audioManager.generateInstrumentMagenta(
                     bpm: globalBPM,
                     bars: magentaBars,
@@ -1013,7 +1219,6 @@ private var magentaStylesSection: some View {
                     guidanceWeight: magentaGuidance
                 )
             }
-        
         }
         
         withAnimation(.easeInOut(duration: 0.3)) {
@@ -1021,8 +1226,6 @@ private var magentaStylesSection: some View {
         }
     }
 }
-
-
 
 #Preview {
     InstrumentConfigPopup(

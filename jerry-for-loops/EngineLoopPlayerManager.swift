@@ -30,6 +30,166 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
     private var lfoStartTime: Date?
     private let lfoMinFrequency: Float = 500.0
     
+    // Recording
+    @Published var isRecording: Bool = false
+    @Published var lastRecordingURL: URL? = nil
+
+    private var recordingFile: AVAudioFile?
+    private let recordingQueue = DispatchQueue(label: "EngineLoopPlayerManager.RecordWriter")
+    private var recordingStartTime: Date?
+    
+    
+    @Published private(set) var recordingArmedUntilHostTime: UInt64?
+    private var recordGateHostTime: UInt64?
+    private let gateEpsilonSec: Double = 0.001  // small tolerance for comparisons
+
+    
+    /// Begin capturing the mixed output to a temp WAV file.
+    /// If `suggestedName` is provided, it seeds the default filename (used later in the rename sheet).
+    func startRecording(suggestedName: String? = nil, gateAtHostTime: UInt64? = nil) throws {
+        guard !isRecording else { return }
+
+        let mix = audioEngine.mainMixerNode
+        let fmt = mix.outputFormat(forBus: 0)
+
+        let base: String
+        if let s = suggestedName?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty {
+            base = s
+        } else {
+            let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+            base = "Jam_\(stamp)"
+        }
+        let tmpURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(base).appendingPathExtension("wav")
+
+        recordingFile = try AVAudioFile(forWriting: tmpURL, settings: fmt.settings)
+        recordingStartTime = Date()
+
+        // Arm the gate (if provided)
+        recordGateHostTime = gateAtHostTime
+
+        // Install the tap now; only write once we cross the gate.
+        mix.installTap(onBus: 0, bufferSize: 4096, format: fmt) { [weak self] buffer, when in
+            guard let self = self, let file = self.recordingFile else { return }
+
+            self.recordingQueue.async {
+                var bufToWrite: AVAudioPCMBuffer? = buffer
+
+                if let gateHT = self.recordGateHostTime {
+                    let sr = buffer.format.sampleRate
+
+                    // Determine the start time (sec) of this buffer
+                    let startSec: Double = {
+                        if when.hostTime != 0 {
+                            return AVAudioTime.seconds(forHostTime: when.hostTime)
+                        } else if when.sampleTime != 0 {
+                            return Double(when.sampleTime) / sr
+                        } else {
+                            return CACurrentMediaTime() // fallback
+                        }
+                    }()
+
+                    let gateSec = AVAudioTime.seconds(forHostTime: gateHT)
+                    let durSec  = Double(buffer.frameLength) / sr
+
+                    // Entire buffer is before the gate → drop it
+                    if startSec + durSec <= gateSec - self.gateEpsilonSec {
+                        return
+                    }
+
+                    // Buffer straddles the gate → trim leading frames
+                    if startSec < gateSec - self.gateEpsilonSec {
+                        let framesToSkip = max(0, Int(round((gateSec - startSec) * sr)))
+                        let framesLeft = max(0, Int(buffer.frameLength) - framesToSkip)
+                        if framesLeft <= 0 { return }
+
+                        if let newBuf = AVAudioPCMBuffer(pcmFormat: buffer.format,
+                                                         frameCapacity: AVAudioFrameCount(framesLeft)) {
+                            newBuf.frameLength = AVAudioFrameCount(framesLeft)
+                            let chs = Int(buffer.format.channelCount)
+                            for ch in 0..<chs {
+                                let src = buffer.floatChannelData![ch] + framesToSkip
+                                let dst = newBuf.floatChannelData![ch]
+                                dst.update(from: src, count: framesLeft)
+                            }
+                            bufToWrite = newBuf
+                        }
+                    }
+
+                    // Gate satisfied after this buffer decision
+                    self.recordGateHostTime = nil
+                    DispatchQueue.main.async {
+                        self.recordingArmedUntilHostTime = nil   // <- UI can flip from countdown → Stop
+                    }
+                }
+
+                // Write whatever portion we decided to keep
+                if let b = bufToWrite {
+                    do { try file.write(from: b) }
+                    catch { print("❌ Recording write error: \(error)") }
+                }
+            }
+        }
+
+        DispatchQueue.main.async { self.isRecording = true }
+    }
+
+
+    /// Stop capture, close the file, and hand back the temp URL.
+    /// You can then move/rename it to Documents after getting the user’s chosen name.
+    func stopRecording(completion: ((URL?) -> Void)? = nil) {
+        guard isRecording else { completion?(nil); return }
+
+        audioEngine.mainMixerNode.removeTap(onBus: 0)
+        let url = recordingFile?.url
+        recordingFile = nil
+
+        DispatchQueue.main.async {
+            self.isRecording = false
+            self.lastRecordingURL = url
+            completion?(url)
+        }
+    }
+    
+    /// Arms the recorder to start exactly at the next **drum loop** boundary.
+    /// Returns (initialBeatsRemaining, secondsPerBeat) so the UI can render a countdown.
+    /// If not playing, falls back to immediate recording (returns nil).
+    @discardableResult
+    func armRecordingAtNextDrumBoundary(suggestedName: String? = nil) -> (Int, Double)? {
+        guard isPlaying else {
+            do { try startRecording(suggestedName: suggestedName) } catch { print("❌ startRecording:", error) }
+            return nil
+        }
+        let gridBeats = Double(drumLoopBeats)
+        guard gridBeats > 0,
+              let (boundaryHT, _) = hostTimeForNextQuantizedBoundary(gridBeats: gridBeats) else {
+            do { try startRecording(suggestedName: suggestedName) } catch { print("❌ startRecording:", error) }
+            return nil
+        }
+
+        // Publish the “armed” target for the UI
+        DispatchQueue.main.async { self.recordingArmedUntilHostTime = boundaryHT }
+
+        // Arm the gated recorder now (install tap immediately, write starts at boundary)
+        do { try startRecording(suggestedName: suggestedName, gateAtHostTime: boundaryHT) }
+        catch { print("❌ gated startRecording:", error) }
+
+        // Compute how many beats until the boundary (cap to 4 for a compact countdown)
+        let nowHT = engineNowHostTime() ?? boundaryHT
+        let nowSec  = AVAudioTime.seconds(forHostTime: nowHT)
+        let gateSec = AVAudioTime.seconds(forHostTime: boundaryHT)
+        let spb     = secondsPerBeat
+        var beatsRemaining = Int(ceil((gateSec - nowSec) / spb))
+        beatsRemaining = max(1, min(4, beatsRemaining))
+        return (beatsRemaining, spb)
+    }
+    
+    public func cancelArming() {
+        recordingArmedUntilHostTime = nil
+    }
+    
+    
+    
     // MARK: - SIMPLIFIED BEAT-BASED TIMING SYSTEM
     
     // Master timing - everything syncs to this beat grid
@@ -169,6 +329,8 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
         // ✅ Do NOT bump to the next grid if we're close — we’ll trust the tiny lead.
         return (ht, nextQ)
     }
+    
+    
 
 
     
@@ -284,7 +446,7 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
         do {
             let audioSession = AVAudioSession.sharedInstance()
             try audioSession.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-            try audioSession.setPreferredSampleRate(48_000)
+            try audioSession.setPreferredSampleRate(44_100)
             try audioSession.setActive(true)
             print("✅ Audio session configured @ \(audioSession.sampleRate) Hz")
         } catch {
@@ -365,6 +527,8 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
         // UI progress stays the same
         updateBeatBasedProgress(currentBeat: currentBeat)
     }
+    
+    
 
     
     // MARK: - LOOP LOADING (SIMPLIFIED)
@@ -725,24 +889,53 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
                 ]
             )
 
-            // Instrument
-            self.currentInstrumentFile  = instrument.audioFile
-            self.instrumentAudioURL     = instrument.url
-            self.instrumentLoopMetadata = instrument.metadata
-            self.instrumentLoopBeats    = self.calculateBeatsFromMetadata(instrument.metadata, defaultBeats: 16)
-            NotificationCenter.default.post(
-                name: .instrumentLoopSwitched,
-                object: nil,
-                userInfo: [
-                    "newAudioURL": instrument.url,
-                    "switchBeat": actualBeat,
-                    "targetBeat": queuedBeat
-                ]
-            )
+            // Instrument (Magenta)
+                self.currentInstrumentFile  = instrument.audioFile
+                self.instrumentAudioURL     = instrument.url
+                self.instrumentLoopMetadata = instrument.metadata
+                self.instrumentLoopBeats    = self.calculateBeatsFromMetadata(instrument.metadata, defaultBeats: 16)
+                NotificationCenter.default.post(
+                    name: .instrumentLoopSwitched,
+                    object: nil,
+                    userInfo: [
+                        "newAudioURL": instrument.url,
+                        "switchBeat": actualBeat,
+                        "targetBeat": queuedBeat
+                    ]
+                )
 
-            self.drumNextLoopQueued = false
-            self.instrumentNextLoopQueued = false
-        }
+            // ✅ NEW: inform the jam pipeline so it can /jam/consume + /jam/next
+            if let meta = instrument.metadata {
+                // Accept either Int or String, and either key name
+                let chunkIndex: Int? = {
+                    if let i = meta["jam_chunk_index"] as? Int { return i }
+                    if let s = meta["jam_chunk_index"] as? String, let i = Int(s) { return i }
+                    if let i = meta["chunkIndex"] as? Int { return i }
+                    if let s = meta["chunkIndex"] as? String, let i = Int(s) { return i }
+                    return nil
+                }()
+
+                if let chunkIndex {
+                    NotificationCenter.default.post(
+                        name: .jamChunkStartedPlaying,
+                        object: nil,
+                        userInfo: [
+                            "chunkIndex": chunkIndex,
+                            "switchTime": boundarySec,   // same boundary you already computed
+                            "audioURL": instrument.url,
+                            "isMagentaChunk": true
+                        ]
+                    )
+                } else {
+                    print("⚠️ (both-switch) jam chunk index missing in instrument.metadata keys: \(Array(meta.keys))")
+                }
+            } else {
+                print("⚠️ (both-switch) instrument.metadata is nil")
+            }
+
+                self.drumNextLoopQueued = false
+                self.instrumentNextLoopQueued = false
+            }
 
         print("✅ Both-switch scheduled (hard cut, .interrupts) @ hostTime \(boundary)")
     }
@@ -845,73 +1038,79 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
 
     
     private func executeInstrumentSwitch(_ pending: PendingLoopSwitch) {
+        // Snapshot beat just for logging / analytics
         let actualBeat = getCurrentBeat()
-        print("🔄 Instrument switch requested at beat \(String(format: "%.3f", actualBeat)) (target beat: \(pending.targetBeat))")
+        print("🎹 Queuing instrument switch → targetBeat=\(pending.targetBeat) (now=\(String(format: "%.2f", actualBeat)))")
 
-        // Determine the exact hostTime for the loop boundary we intend to hit.
-        guard let nowHT = engineNowHostTime() else { return }
+        // Figure out WHEN to switch on the engine clock
         let boundary: UInt64 = {
-            // Prefer the queued target beat (start of the next instrument loop)
-            if let ht = hostTimeForBeat(Double(pending.targetBeat)), ht > nowHT {
+            if let ht = hostTimeForBeat(Double(pending.targetBeat)) {
                 return ht
             }
-            // If somehow in the past, roll to the NEXT full loop boundary (never mid-loop)
-            if let next = hostTimeForNextLoopBoundary(loopBeats: instrumentLoopBeats)?.hostTime {
-                return next
+            if let loopHT = hostTimeForNextLoopBoundary(loopBeats: instrumentLoopBeats)?.hostTime {
+                return loopHT
             }
-            // Last-resort: small safety lead from now
-            return hostTimeForSecondsFromNow(scheduleSafetyLeadSeconds) ?? nowHT
+            // As a last resort, nudge a hair into the future
+            return hostTimeForSecondsFromNow(scheduleSafetyLeadSeconds) ?? (engineNowHostTime() ?? 0)
         }()
 
-        // Resolve nodes BEFORE we flip the active flag.
-        let oldNode = isInstrumentCurrentNodeActive ? instrumentPlayerNode : nextInstrumentPlayerNode
-        let newNode = isInstrumentCurrentNodeActive ? nextInstrumentPlayerNode : instrumentPlayerNode
+        // Decide which nodes are "old" vs "new"
+        let oldNode = isInstrumentCurrentNodeActive ? instrumentPlayerNode     : nextInstrumentPlayerNode
+        let newNode = isInstrumentCurrentNodeActive ? nextInstrumentPlayerNode  : instrumentPlayerNode
 
+        // Prepare the new buffer (or use the prepped one if already present)
         do {
-            // Build the new buffer (entire loop). If you added "preparedBuffer" to PendingLoopSwitch,
-            // feel free to use it here instead of re-reading.
-            let frameCount = AVAudioFrameCount(pending.audioFile.length)
-            guard let buf = AVAudioPCMBuffer(pcmFormat: pending.audioFile.processingFormat,
-                                             frameCapacity: frameCount) else {
-                print("❌ Failed to create instrument buffer")
-                return
-            }
-            pending.audioFile.framePosition = 0
-            try pending.audioFile.read(into: buf)
+            // If we don't have a prepared buffer, read the file now
+            let buffer: AVAudioPCMBuffer = try {
+                if let prepped = pending.preparedBuffer { return prepped }
+                let file = pending.audioFile
+                let fmt  = file.processingFormat
+                guard let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(file.length)) else {
+                    throw NSError(domain: "EngineLoopPlayerManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to allocate buffer"])
+                }
+                file.framePosition = 0
+                try file.read(into: buf)
+                return buf
+            }()
 
-            // Decide seam style: crossfade for Magenta continuations; else hard cut with micro fade-in.
+            // Seam style
             let doCrossfade = shouldCrossfade(pending.metadata)
             if !doCrossfade {
-                applyMicroFadeIn(buf, milliseconds: 4.0) // prevent clicks on hard cut
+                // tiny click-guard on the new buffer
+                applyMicroFadeIn(buffer, milliseconds: 4.0)
             }
 
-            // Schedule at the exact loop boundary on the engine clock.
+            // Schedule the new node ON the boundary with the engine clock
+            // (We start at 0 volume if we'll crossfade; otherwise start loud.)
             let startVolume: Float = doCrossfade ? 0.0 : 1.0
-            scheduleLoop(node: newNode,
-                         buffer: buf,
-                         startHostTime: boundary,
-                         loop: true,
-                         initialVolume: startVolume)
+            scheduleLoop(
+                node: newNode,
+                buffer: buffer,
+                startHostTime: boundary,
+                loop: true,
+                initialVolume: startVolume
+            )
 
+            // Handle the overlap / stop of the old node exactly on the same clock
             if doCrossfade {
-                // Equal-power crossfade centered on the boundary.
+                // Equal-power crossfade that begins right at the boundary
                 crossfadeAtHostTime(boundary, from: oldNode, to: newNode, durationMs: instrumentCrossfadeMs)
 
-                // Stop old node right after the fade to keep CPU tidy.
+                // Stop old node shortly AFTER the fade window to tidy CPU
                 let stopHT = boundary &+ AVAudioTime.hostTime(forSeconds: instrumentCrossfadeMs / 1000.0)
                 runAtHostTime(stopHT) { oldNode.stop() }
             } else {
-                // HARD CUT: no overlap at boundary; ensure new node at full level on the downbeat.
+                // Hard cut at the boundary: stop old, ensure new is full volume
                 runAtHostTime(boundary) {
                     oldNode.stop()
                     newNode.volume = 1.0
                 }
             }
 
-            // Flip which node is "active" for subsequent scheduling decisions.
+            // Flip which instrument node is considered "current"
             isInstrumentCurrentNodeActive.toggle()
 
-            // Defer state/UI updates until the audible switch moment so visuals match audio exactly.
+            // Defer state + notifications to the exact audible switch time
             let boundarySec = AVAudioTime.seconds(forHostTime: boundary)
             runAtHostTime(boundary) {
                 self.currentInstrumentFile  = pending.audioFile
@@ -919,21 +1118,23 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
                 self.instrumentLoopMetadata = pending.metadata
                 self.instrumentLoopBeats    = self.calculateBeatsFromMetadata(pending.metadata, defaultBeats: 16)
 
-                // Mark queue consumed at the actual switch.
+                // The queue has been consumed
                 self.instrumentNextLoopQueued = false
 
+                // UI / state listeners
                 NotificationCenter.default.post(
                     name: .instrumentLoopSwitched,
                     object: nil,
                     userInfo: [
                         "newAudioURL": pending.url,
-                        "switchBeat": actualBeat,           // for reference/logging
-                        "targetBeat": pending.targetBeat    // the boundary we hit
+                        "switchBeat": actualBeat,
+                        "targetBeat": pending.targetBeat
                     ]
                 )
 
-                // If this was a Magenta jam chunk, notify its true audible start.
+                // If this came from a Magenta jam chunk, announce its true start time
                 if let chunkIndex = pending.metadata?["jam_chunk_index"] as? Int {
+                    print("🎯 About to post jamChunkStartedPlaying for chunk \(chunkIndex)")
                     NotificationCenter.default.post(
                         name: .jamChunkStartedPlaying,
                         object: nil,
@@ -944,6 +1145,9 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
                             "isMagentaChunk": true
                         ]
                     )
+                    print("✅ Posted jamChunkStartedPlaying notification for chunk \(chunkIndex)")
+                } else {
+                    print("❌ No jam_chunk_index found in metadata: \(pending.metadata?.keys.sorted() ?? [])")
                 }
             }
 
@@ -952,6 +1156,7 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
             print("❌ Failed to prepare instrument buffer: \(error)")
         }
     }
+
 
 
 
@@ -996,8 +1201,8 @@ class EngineLoopPlayerManager: NSObject, ObservableObject {
     private func shouldCrossfade(_ metadata: [String: Any]?) -> Bool {
         // Treat Magenta chunks (continuations) as crossfade-friendly
         if let meta = metadata {
-            if meta["jam_chunk_index"] != nil { return true }
-            if (meta["isMagentaChunk"] as? Bool) == true { return true }
+            if meta["jam_chunk_index"] != nil { return false }
+            if (meta["isMagentaChunk"] as? Bool) == true { return false }
         }
         return false
     }

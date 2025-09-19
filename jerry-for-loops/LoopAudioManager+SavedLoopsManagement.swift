@@ -11,6 +11,65 @@ import Foundation
 // MARK: - LoopAudioManager Extension for Saved Loops Management
 extension LoopAudioManager {
     
+    struct LoopSnapshot {
+            let tempURL: URL
+            let metadata: [String: Any]
+            let loopType: String   // "drums" or "instruments"
+        }
+
+        /// Copy the *current* loop to a temp file so it can't be replaced while the user types.
+        func makeSnapshot(for loopType: LoopType) -> LoopSnapshot? {
+            guard let pm = playerManager else { return nil }
+
+            let srcURL: URL?
+            let md: [String: Any]?
+            let typeString: String
+
+            switch loopType {
+            case .drums:
+                srcURL = pm.drumAudioURL
+                md = pm.drumLoopMetadata
+                typeString = "drums"
+            case .instruments:
+                srcURL = pm.instrumentAudioURL
+                md = pm.instrumentLoopMetadata
+                typeString = "instruments"
+            }
+
+            guard let source = srcURL, let metadata = md else { return nil }
+
+            let fm = FileManager.default
+            let base = fm.temporaryDirectory.appendingPathComponent("loop_save_snapshots", isDirectory: true)
+            try? fm.createDirectory(at: base, withIntermediateDirectories: true)
+            let dst = base.appendingPathComponent("\(UUID().uuidString).wav")
+
+            do {
+                try fm.copyItem(at: source, to: dst)
+                return LoopSnapshot(tempURL: dst, metadata: metadata, loopType: typeString)
+            } catch {
+                print("❌ Snapshot copy failed: \(error)")
+                return nil
+            }
+        }
+
+        /// Commit a previously captured snapshot under the user's chosen name.
+        func commitSnapshot(_ snapshot: LoopSnapshot, withName name: String) {
+            // Reuse our existing permanent save pipeline
+            saveLoopPermanently(
+                currentAudioURL: snapshot.tempURL,
+                metadata: snapshot.metadata,
+                userGivenName: name,
+                loopType: snapshot.loopType
+            )
+            // Clean up the temp file
+            try? FileManager.default.removeItem(at: snapshot.tempURL)
+        }
+
+        /// Discard (delete) a snapshot if the user cancels.
+        func discardSnapshot(_ snapshot: LoopSnapshot) {
+            try? FileManager.default.removeItem(at: snapshot.tempURL)
+        }
+    
     // MARK: - Permanent Save Methods
 
     func saveDrumLoopPermanently(withName name: String) {
@@ -157,6 +216,46 @@ extension LoopAudioManager {
             print("❌ Failed to save loop permanently: \(error)")
             DispatchQueue.main.async {
                 self.errorMessage = "Failed to save loop: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    // MARK: - Edit / Delete Saved Loops
+    func deleteSavedLoop(_ loop: SavedLoopInfo) {
+        let fm = FileManager.default
+        do {
+            if fm.fileExists(atPath: loop.audioURL.path) {
+                try fm.removeItem(at: loop.audioURL)
+            }
+            if fm.fileExists(atPath: loop.metadataURL.path) {
+                try fm.removeItem(at: loop.metadataURL)
+            }
+            print("🗑️ Deleted saved loop: \(loop.displayName)")
+        } catch {
+            DispatchQueue.main.async {
+                self.errorMessage = "Failed to delete loop: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func renameSavedLoop(_ loop: SavedLoopInfo, to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        do {
+            let data = try Data(contentsOf: loop.metadataURL)
+            guard var dict = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
+                throw NSError(domain: "Rename", code: 0, userInfo: [NSLocalizedDescriptionKey: "Bad metadata JSON"])
+            }
+            dict["userGivenName"] = trimmed
+
+            let out = try JSONSerialization.data(withJSONObject: dict, options: .prettyPrinted)
+            try out.write(to: loop.metadataURL, options: .atomic)
+
+            print("✏️ Renamed saved loop to: \(trimmed)")
+        } catch {
+            DispatchQueue.main.async {
+                self.errorMessage = "Failed to rename: \(error.localizedDescription)"
             }
         }
     }

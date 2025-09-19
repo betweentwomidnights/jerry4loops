@@ -40,7 +40,12 @@ struct SavedLoopInfo {
     }
     
     var duration: Double {
-        return metadata["loop_duration_seconds"] as? Double ?? 0.0
+        if let d = metadata["loop_duration_seconds"] as? Double { return d }
+        if let nested = metadata["metadata"] as? [String: Any],
+           let d = nested["loop_duration_seconds"] as? Double { return d }
+        if let d = metadata["actualDuration"] as? Double { return d }
+        if let d = metadata["loopDuration"] as? Double { return d }
+        return 0.0
     }
     
     var seed: Int {

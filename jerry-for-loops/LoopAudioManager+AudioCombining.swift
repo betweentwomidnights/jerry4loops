@@ -12,25 +12,47 @@ import AVFoundation
 // MARK: - LoopAudioManager Extension for Audio Combining
 extension LoopAudioManager {
     
+    
+    
     /// Generate combined audio from current drum and instrument loops for style transfer
+    private func snapshotCurrentLoopFiles()
+    -> (drum: URL, inst: URL, drumMeta: [String:Any], instMeta: [String:Any])? {
+        guard let pm = playerManager,
+              let drumURL = pm.drumAudioURL,
+              let instURL = pm.instrumentAudioURL,
+              let drumMeta = pm.drumLoopMetadata,
+              let instMeta = pm.instrumentLoopMetadata else { return nil }
+
+        let base = FileManager.default.temporaryDirectory.appendingPathComponent("style_snapshots", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+
+        let drumSnap = base.appendingPathComponent("drum_\(UUID().uuidString).wav")
+        let instSnap = base.appendingPathComponent("inst_\(UUID().uuidString).wav")
+        do {
+            try FileManager.default.copyItem(at: drumURL, to: drumSnap)
+            try FileManager.default.copyItem(at: instURL, to: instSnap)
+            return (drum: drumSnap, inst: instSnap, drumMeta: drumMeta, instMeta: instMeta)
+        } catch {
+            print("❌ Snapshot copy failed: \(error)")
+            return nil
+        }
+    }
+
     func generateCombinedAudioForStyleTransfer() -> URL? {
-        guard let drumURL = playerManager?.drumAudioURL,
-              let instrumentURL = playerManager?.instrumentAudioURL,
-              let drumMetadata = playerManager?.drumLoopMetadata,
-              let instrumentMetadata = playerManager?.instrumentLoopMetadata else {
+        guard let snap = snapshotCurrentLoopFiles() else {
             print("❌ Need both drum and instrument loops for style transfer")
             return nil
         }
-        
-        print("🎵 Creating combined audio for style transfer...")
-        print("   Drum: \(drumURL.lastPathComponent)")
-        print("   Instrument: \(instrumentURL.lastPathComponent)")
-        
+        defer {
+            try? FileManager.default.removeItem(at: snap.drum)
+            try? FileManager.default.removeItem(at: snap.inst)
+        }
+
         return createCombinedLoopedAudio(
-            drumURL: drumURL,
-            instrumentURL: instrumentURL,
-            drumMetadata: drumMetadata,
-            instrumentMetadata: instrumentMetadata,
+            drumURL: snap.drum,
+            instrumentURL: snap.inst,
+            drumMetadata: snap.drumMeta,
+            instrumentMetadata: snap.instMeta,
             targetDuration: 12.0
         )
     }

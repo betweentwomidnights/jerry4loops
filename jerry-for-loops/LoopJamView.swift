@@ -8,6 +8,33 @@ struct LoopJamView: View {
     // Global BPM state
     @State private var globalBPM: Int = 120
     
+    // Only these BPMs are battle-tested for MagentaRT right now.
+    private var isMagentaFriendlyBPM: Bool { globalBPM == 100 || globalBPM == 120 }
+    
+    private enum AlignmentStatus { case excellent, okay, risky }
+
+    private func magentaAlignment(for bpm: Int, bars: Int = 4, fps: Double = 25.0, beatsPerBar: Double = 4.0) -> AlignmentStatus {
+        let framesPerBar   = fps * 60.0 * beatsPerBar / Double(bpm)        // 6000 / bpm
+        let framesPerChunk = framesPerBar * Double(bars)                    // e.g., 4 bars
+
+        // distance (in frames) to the nearest integer frame
+        let barRemainder   = abs(framesPerBar.rounded()   - framesPerBar)
+        let chunkRemainder = abs(framesPerChunk.rounded() - framesPerChunk)
+
+        // take the worst-case remainder; if either bar or chunk is "off", we warn
+        let worst = max(barRemainder, chunkRemainder)
+
+        // Tune these thresholds to your taste after a bit of field testing:
+        if worst < 0.05 {            // < 0.05 frame (~2 ms) is effectively perfect
+            return .excellent
+        } else if worst < 0.35 {     // small rounding; generally fine in practice
+            return .okay
+        } else {                     // noticeable rounding; might drift at slice boundaries
+            return .risky
+        }
+    }
+    
+    
     // UI state
     @State private var showDrumConfig: Bool = false
     @State private var showInstrumentConfig: Bool = false
@@ -29,10 +56,205 @@ struct LoopJamView: View {
         audioManager.jamState.isBusy
     }
     
+    @State private var pendingDrumSnapshot: LoopAudioManager.LoopSnapshot?
+    @State private var pendingInstrumentSnapshot: LoopAudioManager.LoopSnapshot?
+    
+    @State private var showStudioMenu: Bool = false
+    
+    @StateObject private var modelService = ModelService(
+        baseURL: "https://thecollabagepatch-magenta-retry.hf.space"
+    )
+    
+    @State private var showRecordingSave: Bool = false
+    @State private var pendingRecordingURL: URL?
+    @State private var pendingRecordingName: String = ""
+    
+    @State private var showRecordings: Bool = false
+    @StateObject private var recordings = RecordingLibrary()
+    
+    @State private var recContextDrum: URL?
+    @State private var recContextInstr: URL?
+    
+    @State private var showCountdown = false
+    @State private var countdownBeatsRemaining = 4   // 4→3→2→1
+    @State private var countdownTimer: Timer?
+    
+    @State private var armedSpin = false   // simple spinner for the armed state
+
+    
+    @State private var transportArmed = false
+    
+    private func beginCountdownAndRecord() {
+        // Guard: must have content to play
+        guard hasLoops else { return }
+
+        countdownTimer?.invalidate()
+        countdownBeatsRemaining = 4   // show "4" first
+        showCountdown = true
+
+        let beatSeconds = 60.0 / Double(globalBPM)
+        countdownTimer = Timer.scheduledTimer(withTimeInterval: beatSeconds, repeats: true) { t in
+            // Drive one step per beat; only stop the timer when we’re done
+            tickCountdown(then: {
+                // This closure is now called ONLY when countdown completes
+                t.invalidate()
+            })
+        }
+        RunLoop.main.add(countdownTimer!, forMode: .common)
+    }
+
+    private func tickCountdown(then onFinished: (() -> Void)? = nil) {
+        if countdownBeatsRemaining > 1 {
+            // 4→3→2 (no timer invalidation here)
+            countdownBeatsRemaining -= 1
+        } else {
+            // Reached "1" → start playback and recording
+            countdownTimer?.invalidate()
+            countdownTimer = nil
+            showCountdown = false
+
+            playerManager.startLooping()
+            transportArmed = true  // <-- makes the main button show Stop immediately
+
+            // Small lead so the audible start is captured
+            let coldStartLead = 0.05
+            DispatchQueue.main.asyncAfter(deadline: .now() + coldStartLead) {
+                do { try playerManager.startRecording() }
+                catch { print("❌ startRecording:", error) }
+            }
+
+            onFinished?()
+        }
+    }
+
+    private var hasLoops: Bool {
+        (playerManager.drumAudioURL != nil) || (playerManager.instrumentAudioURL != nil)
+    }
+    
+    private func cancelOverlayCountdown() {
+        countdownTimer?.invalidate()
+        countdownTimer = nil
+        showCountdown = false
+    }
+
+    private func armToNextDownbeat() {
+        // Ask the engine to arm recording; we don’t show numbers anymore.
+        _ = playerManager.armRecordingAtNextDrumBoundary()
+        armedSpin = true
+    }
+
+    private func cancelArming() {
+        armedSpin = false
+        // If you added this method in EngineLoopPlayerManager, call it:
+        playerManager.cancelArming()
+    }
+
+    
+    
     var body: some View {
         ZStack {
             // Black background
             Color.black.edgesIgnoringSafeArea(.all)
+            
+            if showCountdown {
+                ZStack {
+                    Color.black.opacity(0.35).ignoresSafeArea()
+                    Text("\(countdownBeatsRemaining)")
+                        .font(.system(size: 96, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                        .padding()
+                        .background(Circle().fill(Color.black.opacity(0.45)))
+                        .transition(.opacity)
+                }
+                .zIndex(50)
+            }
+            
+            // 2) Inside ZStack (top overlay)
+            VStack {
+                HStack(spacing: 10) {
+                    // Left: Studio menu (unchanged)
+                    Button {
+                        withAnimation(.spring()) { showStudioMenu = true }
+                    } label: {
+                        Image(systemName: "line.3.horizontal")
+                            .font(.title2)
+                            .foregroundColor(.white)
+                            .padding(10)
+                            .background(Color.black.opacity(0.35))
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                    .accessibilityLabel("Open studio controls")
+
+                    Spacer()
+
+                    // Right: RECORD / STOP
+                    Button {
+                        if playerManager.isRecording {
+                            // STOP immediately → save dialog
+                            cancelOverlayCountdown()
+                            cancelArming()
+                            playerManager.stopRecording { url in
+                                guard let url = url else { return }
+                                pendingRecordingURL = url
+                                pendingRecordingName = url.deletingPathExtension().lastPathComponent
+                                showRecordingSave = true
+                            }
+                        } else if playerManager.recordingArmedUntilHostTime != nil {
+                            // Tap while ARMED → cancel arming
+                            cancelArming()
+                        } else if playerManager.isPlaying {
+                            // Transport running → arm to next downbeat (no numeric countdown)
+                            armToNextDownbeat()
+                        } else {
+                            // Transport idle → use big overlay countdown, then auto-play + record
+                            beginCountdownAndRecord()
+                        }
+                    } label: {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.black.opacity(0.35))
+
+                            if playerManager.recordingArmedUntilHostTime != nil {
+                                // ARMED indicator (animated)
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .font(.title2)
+                                    .foregroundColor(.orange)
+                                    .rotationEffect(.degrees(armedSpin ? 360 : 0))
+                                    .animation(.linear(duration: 1.2).repeatForever(autoreverses: false), value: armedSpin)
+                            } else if playerManager.isRecording {
+                                Image(systemName: "stop.fill")
+                                    .font(.title2)
+                                    .foregroundColor(.red)
+                            } else {
+                                Image(systemName: "record.circle")
+                                    .font(.title2)
+                                    .foregroundColor(hasLoops ? .red : .gray)
+                            }
+                        }
+                        .frame(width: 44, height: 44)
+                    }
+                    .disabled(!hasLoops && !playerManager.isRecording)
+
+                    // New: recordings drawer toggle
+                    Button {
+                        withAnimation(.spring()) { showRecordings.toggle() }
+                        if showRecordings { recordings.refresh() }
+                    } label: {
+                        Image(systemName: "music.note.list")
+                            .font(.title2)
+                            .foregroundColor(.white)
+                            .padding(10)
+                            .background(Color.black.opacity(0.35))
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    }
+                    .accessibilityLabel("Show recordings")
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 10)
+
+                Spacer()
+            }
+            .zIndex(20)
             
             VStack(spacing: 20) {
                 // Global BPM Header
@@ -74,30 +296,120 @@ struct LoopJamView: View {
                     }
                     .zIndex(5) // Keep above main content
             
-            // Drum Save Dialog
-            .sheet(isPresented: $showDrumSaveDialog) {
-                SaveLoopDialog(
-                    isPresented: $showDrumSaveDialog,
-                    loopName: $drumSaveName,
-                    loopType: "Drums",
-                    metadata: playerManager.drumLoopMetadata,
-                    onSave: { name in
-                        audioManager.saveDrumLoopPermanently(withName: name)
+                    .sheet(isPresented: $showDrumSaveDialog) {
+                        SaveLoopDialog(
+                            isPresented: $showDrumSaveDialog,
+                            loopName: $drumSaveName,
+                            loopType: "Drums",
+                            metadata: pendingDrumSnapshot?.metadata,     // use SNAPSHOT metadata
+                            onSave: { name in
+                                if let snap = pendingDrumSnapshot {
+                                    audioManager.commitSnapshot(snap, withName: name)
+                                    pendingDrumSnapshot = nil
+                                }
+                            },
+                            onCancel: {
+                                if let snap = pendingDrumSnapshot {
+                                    audioManager.discardSnapshot(snap)
+                                    pendingDrumSnapshot = nil
+                                }
+                            }
+                        )
                     }
-                )
-            }
+                    .onChange(of: showDrumSaveDialog) { presented in
+                        // If the sheet was dismissed without saving, discard the snapshot
+                        if !presented, let snap = pendingDrumSnapshot {
+                            audioManager.discardSnapshot(snap)
+                            pendingDrumSnapshot = nil
+                        }
+                    }
 
             // Instrument Save Dialog
-            .sheet(isPresented: $showInstrumentSaveDialog) {
-                SaveLoopDialog(
-                    isPresented: $showInstrumentSaveDialog,
-                    loopName: $instrumentSaveName,
-                    loopType: "Instruments",
-                    metadata: playerManager.instrumentLoopMetadata,
-                    onSave: { name in
-                        audioManager.saveInstrumentLoopPermanently(withName: name)
+                    .sheet(isPresented: $showInstrumentSaveDialog) {
+                        SaveLoopDialog(
+                            isPresented: $showInstrumentSaveDialog,
+                            loopName: $instrumentSaveName,
+                            loopType: "Instruments",
+                            metadata: pendingInstrumentSnapshot?.metadata,     // use SNAPSHOT metadata
+                            onSave: { name in
+                                if let snap = pendingInstrumentSnapshot {
+                                    audioManager.commitSnapshot(snap, withName: name)
+                                    pendingInstrumentSnapshot = nil
+                                }
+                            },
+                            onCancel: {
+                                if let snap = pendingInstrumentSnapshot {
+                                    audioManager.discardSnapshot(snap)
+                                    pendingInstrumentSnapshot = nil
+                                }
+                            }
+                        )
                     }
-                )
+                    .onChange(of: showInstrumentSaveDialog) { presented in
+                        // If the sheet was dismissed without saving, discard the snapshot
+                        if !presented, let snap = pendingInstrumentSnapshot {
+                            audioManager.discardSnapshot(snap)
+                            pendingInstrumentSnapshot = nil
+                        }
+                    }
+                    .onChange(of: playerManager.isPlaying) { now in
+                        transportArmed = now // when engine says playing=false, clear our armed flag too
+                    }
+            
+                    
+                    .sheet(isPresented: $showRecordingSave) {
+                        SaveRecordingDialog(
+                            isPresented: $showRecordingSave,
+                            defaultName: $pendingRecordingName,
+                            onSave: { name in
+                                guard let src = pendingRecordingURL else { return }
+
+                                let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                                let recs = docs.appendingPathComponent("recorded_jams", isDirectory: true)
+                                try? FileManager.default.createDirectory(at: recs, withIntermediateDirectories: true)
+
+                                var dest = recs.appendingPathComponent(name)
+                                if dest.pathExtension.lowercased() != "wav" {
+                                    dest.deletePathExtension()
+                                    dest.appendPathExtension("wav")
+                                }
+                                do {
+                                    if FileManager.default.fileExists(atPath: dest.path) {
+                                        try FileManager.default.removeItem(at: dest)
+                                    }
+                                    try FileManager.default.moveItem(at: src, to: dest)
+                                    print("✅ Saved recording to \(dest.lastPathComponent)")
+                                    recordings.refresh() // ← update drawer
+                                } catch {
+                                    print("❌ Save/move failed: \(error)")
+                                }
+                            },
+                            onCancel: {
+                                // Optional: keep the temp file or clean it up
+                                try? FileManager.default.removeItem(at: pendingRecordingURL!)
+                            }
+                        )
+                    }
+            
+            if showStudioMenu {
+                StudioMenuPanel(isVisible: $showStudioMenu)
+                    .environmentObject(modelService)
+                    .environmentObject(audioManager) 
+                    .padding(.top, 56)
+                    .padding(.leading, 14)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+                    .zIndex(28) // just under the recordings drawer's 30, above main content
+            }
+            
+            // Recordings overlay
+            if showRecordings {
+                RecordingsDrawer(isVisible: $showRecordings,   // ← pass the binding
+                                 library: recordings)
+                    .padding(.top, 56)
+                    .padding(.trailing, 14)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .zIndex(30)
+                    .onDisappear { recordings.items.removeAll() }
             }
             
             // Drum Configuration Popup
@@ -112,7 +424,9 @@ struct LoopJamView: View {
                 isVisible: $showInstrumentConfig,
                 audioManager: audioManager,
                 globalBPM: globalBPM
+                
             )
+            .environmentObject(modelService)
             
             MagentaConfigPopup(
                 isVisible: $showMagentaConfig,
@@ -123,6 +437,10 @@ struct LoopJamView: View {
         .onAppear {
             // Connect audio manager with player manager for coordination
             audioManager.connectPlayerManager(playerManager)
+        }
+        .onReceive(playerManager.$recordingArmedUntilHostTime) { ht in
+            // When arming completes (ht becomes nil), stop the armed spinner.
+            if ht == nil { armedSpin = false }
         }
         .onReceive(NotificationCenter.default.publisher(for: .drumLoopGenerated)) { notification in
             if let audioURL = notification.userInfo?["audioURL"] as? URL,
@@ -175,6 +493,15 @@ struct LoopJamView: View {
                 // UI will automatically update via @Published properties
             }
         }
+        .onDisappear {
+            // cancel any cold-start overlay countdown
+            cancelOverlayCountdown()
+            // cancel the “armed” state/spinner + clear engine gate
+            cancelArming()
+            // reset the transport UI hint
+            transportArmed = false
+        }
+
     }
     
     // MARK: - Global BPM Section (UPDATED)
@@ -202,18 +529,43 @@ struct LoopJamView: View {
                     Text("🔒 BPM locked during playback")
                         .font(.caption2)
                         .foregroundColor(.orange.opacity(0.8))
-                } else if globalBPM != 120 {
-                    Text("Fresh session • All loops cleared")
-                        .font(.caption2)
-                        .foregroundColor(.blue.opacity(0.8))
                 } else {
-                    Text("Ready to jam")
+                    let status = magentaAlignment(for: globalBPM)  // <— compute once
+
+                    switch status {
+                    case .excellent:
+                        Text("Ready to jam")
+                            .font(.caption2)
+                            .foregroundColor(.green.opacity(0.85))
+
+                    case .okay:
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "info.circle.fill")
+                            Text("Heads up: MagentaRT at \(globalBPM) BPM uses tiny rounding. Usually fine.")
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .multilineTextAlignment(.center)
+                                .layoutPriority(1)
+                        }
                         .font(.caption2)
-                        .foregroundColor(.green.opacity(0.8))
+                        .foregroundColor(.yellow)
+
+                    case .risky:
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                            Text("Warning: if you plan on using MagentaRT, jam chunks may not line up at \(globalBPM) BPM. Try 100 or 120.")
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .multilineTextAlignment(.center)
+                                .layoutPriority(1)
+                        }
+                        .font(.caption2)
+                        .foregroundColor(.orange)
+                    }
                 }
             }
-            .animation(.easeInOut(duration: 0.2), value: isGloballyPlaying)
             .animation(.easeInOut(duration: 0.2), value: globalBPM)
+            .animation(.easeInOut(duration: 0.2), value: isGloballyPlaying)
         }
     }
 
@@ -285,26 +637,22 @@ struct LoopJamView: View {
                     }
                     
                     Button(action: {
-                        // Set default name based on current drum metadata
-                        if let metadata = playerManager.drumLoopMetadata {
+                        // Freeze the *current* loop immediately
+                        pendingDrumSnapshot = audioManager.makeSnapshot(for: .drums)
+
+                        // Default name from the SNAPSHOT metadata (not live UI)
+                        if let metadata = pendingDrumSnapshot?.metadata {
                             let bpm = metadata["detected_bpm"] as? Int ?? globalBPM
                             let bars = metadata["bars"] as? Int ?? 1
                             drumSaveName = "Drums \(bpm)bpm \(bars)bars"
-                        } else {
-                            drumSaveName = "Drums \(globalBPM)bpm"
+                            showDrumSaveDialog = true
                         }
-                        showDrumSaveDialog = true
                     }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "square.and.arrow.down")
-                        }
-                        .font(.subheadline)
-                        .fontWeight(.bold)
+                        HStack(spacing: 6) { Image(systemName: "square.and.arrow.down") }
+                        .font(.subheadline).fontWeight(.bold)
                         .foregroundColor(.black)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color.green)
-                        .cornerRadius(8)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(Color.green).cornerRadius(8)
                     }
                     .disabled(playerManager.drumAudioURL == nil)
                 }
@@ -327,7 +675,7 @@ struct LoopJamView: View {
             )
             
             // Filter and Reverb Controls Row
-            HStack(spacing: 20) {
+            HStack(spacing: 15) {
                 // Filter Knob
                 FilterKnob(
                     frequency: $playerManager.filterFrequency,
@@ -378,11 +726,11 @@ struct LoopJamView: View {
                                 .scaleEffect(0.8)
                             
                             if playerManager.isPlaying {
-                                Text("Live coding: Next loop generating...")
+                                Text("Next loop generating...")
                                     .font(.caption)
                                     .foregroundColor(.orange)
                             } else {
-                                Text("Generating drums...")
+                                Text("Generating...")
                                     .font(.caption)
                                     .foregroundColor(.gray)
                             }
@@ -400,11 +748,11 @@ struct LoopJamView: View {
                             .font(.caption2)
                             .foregroundColor(.orange.opacity(0.7))
                     } else if playerManager.drumAudioURL == nil {
-                        Text("No drum loop loaded")
+                        Text("No loop loaded")
                             .font(.caption)
                             .foregroundColor(.gray)
                     } else {
-                        Text("Drum loop ready • \(globalBPM) BPM")
+                        Text("Loop ready • \(globalBPM)bpm")
                             .font(.caption)
                             .foregroundColor(.green)
                     }
@@ -474,26 +822,26 @@ struct LoopJamView: View {
                     .disabled(audioManager.isGenerating || jamBusy)
                     
                     Button(action: {
-                        // Set default name based on current instrument metadata
-                        if let metadata = playerManager.instrumentLoopMetadata {
-                            let bpm = metadata["detected_bpm"] as? Int ?? globalBPM
+                        // Freeze the *current* INSTRUMENT loop immediately
+                        pendingInstrumentSnapshot = audioManager.makeSnapshot(for: .instruments)
+
+                        // Default name from the SNAPSHOT metadata (not live UI)
+                        if let metadata = pendingInstrumentSnapshot?.metadata {
+                            let bpm  = metadata["detected_bpm"] as? Int ?? globalBPM
                             let bars = metadata["bars"] as? Int ?? 1
                             instrumentSaveName = "Instruments \(bpm)bpm \(bars)bars"
                         } else {
+                            // Fallback name if metadata is missing
                             instrumentSaveName = "Instruments \(globalBPM)bpm"
                         }
-                        showInstrumentSaveDialog = true
+
+                        showInstrumentSaveDialog = (pendingInstrumentSnapshot != nil)
                     }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "square.and.arrow.down")
-                        }
-                        .font(.subheadline)
-                        .fontWeight(.bold)
+                        HStack(spacing: 6) { Image(systemName: "square.and.arrow.down") }
+                        .font(.subheadline).fontWeight(.bold)
                         .foregroundColor(.black)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(Color.green)
-                        .cornerRadius(8)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(Color.green).cornerRadius(8)
                     }
                     .disabled(playerManager.instrumentAudioURL == nil)
                 }
@@ -514,7 +862,7 @@ struct LoopJamView: View {
                         )
                 )
             
-            HStack(spacing: 20) {
+            HStack(spacing: 15) {
                 // Instrument Filter Knob
                 FilterKnob(
                     frequency: $playerManager.instrumentFilterFrequency,
@@ -556,11 +904,11 @@ struct LoopJamView: View {
                                 .scaleEffect(0.8)
                             
                             if playerManager.isPlaying {
-                                Text("Live coding: Next loop generating...")
+                                Text("Next loop generating...")
                                     .font(.caption)
                                     .foregroundColor(.orange)
                             } else {
-                                Text("Generating instruments...")
+                                Text("Generating...")
                                     .font(.caption)
                                     .foregroundColor(.gray)
                             }
@@ -578,11 +926,11 @@ struct LoopJamView: View {
                             .font(.caption2)
                             .foregroundColor(.orange.opacity(0.7))
                     } else if playerManager.instrumentAudioURL == nil {
-                        Text("No instrument loop loaded")
+                        Text("No loop loaded")
                             .font(.caption)
                             .foregroundColor(.gray)
                     } else {
-                        Text("Instrument loop ready • \(globalBPM) BPM")
+                        Text("Loop ready • \(globalBPM)bpm")
                             .font(.caption)
                             .foregroundColor(.purple)
                     }
@@ -603,19 +951,19 @@ struct LoopJamView: View {
         HStack(spacing: 20) {
             // Play/Stop Button
             Button(action: toggleGlobalPlayback) {
-                Image(systemName: isGloballyPlaying ? "stop.fill" : "play.fill")
+                let willPlay = playerManager.isPlaying || transportArmed
+                Image(systemName: willPlay ? "stop.fill" : "play.fill")
                     .font(.title)
                     .foregroundColor(.white)
                     .frame(width: 60, height: 60)
                     .background(
-                        Circle()
-                            .fill(isGloballyPlaying ? Color.red : Color.green)
+                        Circle().fill(willPlay ? Color.red : Color.green)
                     )
             }
-            .disabled(playerManager.drumAudioURL == nil)
+            .disabled(playerManager.drumAudioURL == nil && !(playerManager.isPlaying || transportArmed))
             
             // Enhanced status indicator
-            if isGloballyPlaying {
+            if playerManager.isPlaying || transportArmed {
                 VStack(spacing: 2) {
                     Text("PLAYING")
                         .font(.caption)
@@ -649,6 +997,7 @@ struct LoopJamView: View {
         let loopType: String
         let metadata: [String: Any]?
         let onSave: (String) -> Void
+        var onCancel: (() -> Void)? = nil
         
         var body: some View {
             NavigationView {
@@ -707,6 +1056,7 @@ struct LoopJamView: View {
                     // Save/Cancel buttons
                     HStack(spacing: 16) {
                         Button("Cancel") {
+                            onCancel?()
                             isPresented = false
                         }
                         .font(.body)
@@ -739,12 +1089,66 @@ struct LoopJamView: View {
     
     // MARK: - Actions
     private func toggleGlobalPlayback() {
-        if isGloballyPlaying {
+        // If we’re recording, STOP recording and transport, then show save dialog.
+        if playerManager.isRecording {
+            cancelOverlayCountdown()
+            cancelArming()
+
+            playerManager.stopRecording { url in
+                guard let url = url else { return }
+                pendingRecordingURL = url
+                pendingRecordingName = url.deletingPathExtension().lastPathComponent
+                showRecordingSave = true
+            }
+
             playerManager.stopAll()
+            transportArmed = false
+            return
+        }
+
+        // Otherwise, normal play/stop toggle (respect “armed” visual state).
+        if playerManager.isPlaying || transportArmed {
+            cancelOverlayCountdown()
+            cancelArming()
+            playerManager.stopAll()
+            transportArmed = false
         } else {
             playerManager.startLooping()
+            transportArmed = true  // flip main button to Stop immediately
         }
-        isGloballyPlaying.toggle()
+    }
+}
+
+struct SaveRecordingDialog: View {
+    @Binding var isPresented: Bool
+    @Binding var defaultName: String
+    let onSave: (String) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 16) {
+                Text("Save Recording").font(.headline)
+                TextField("Recording name", text: $defaultName)
+                    .textFieldStyle(.roundedBorder)
+                    .onAppear {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            UIApplication.shared.sendAction(#selector(UIResponder.selectAll(_:)), to: nil, from: nil, for: nil)
+                        }
+                    }
+                Spacer()
+                HStack {
+                    Button("Cancel") { onCancel(); isPresented = false }
+                        .frame(maxWidth: .infinity).padding().background(Color.gray.opacity(0.2)).cornerRadius(8)
+                    Button("Save") { onSave(defaultName.trimmingCharacters(in: .whitespacesAndNewlines)); isPresented = false }
+                        .frame(maxWidth: .infinity).padding().background(Color.green).foregroundColor(.white).cornerRadius(8)
+                        .disabled(defaultName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .padding()
+            .navigationBarHidden(true)
+        }
+        .presentationDetents([.medium])
     }
 }
 
